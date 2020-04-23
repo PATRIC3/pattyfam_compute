@@ -16,20 +16,14 @@ This is the first step in a pattyfam computation. It builds the data directory
 hierarchy used for the computation of the local families.
 
 We build a directory for each bacterial/archael genus that has a sufficient
-number of genomes.
+number of genomes. The directories are names Genus-GenusTaxId because there the
+genus names are not unique across the taxonomic tree (e.g. Ponticoccus is both 983507
+519422).
 
 We also build a directory for all phage genomes, and one for each genus of 
 non-phage viruses.
 
 =cut
-
-
-
-#
-# NEED to pull genus mapping data at this time as well.
-#
-#" http://localhost:9006/solr/taxonomy/select?q=taxon_rank%3Agenus&fl=taxon_name%2Ctaxon_id&wt=csv&csv.separator=%09&rows=1000000&sort=taxon_name%20asc
-    
 
 use strict;
 use File::Path 'make_path';
@@ -68,6 +62,7 @@ die($usage->text) if @ARGV != 1;
 
 my $base_data_dir = shift;
 
+my $json = JSON::XS->new->pretty(1);
 
 my %gnames;
 my @genome_data = get_genomes($opt, \%gnames);
@@ -101,124 +96,291 @@ pareach \@genome_data, sub {
     for my $gid (@$genome_ids)
     {
 	my $prots = $opt->genome_dir . "/$gid/$gid.PATRIC.faa";
-	if (!open(P, "<", $prots))
+	if (open(P, "<", $prots))
 	{
-	    warn "Cannot open prots file $prots: $!";
-	    next;
-	}
-	open(SEQS, ">", "$seqs_dir/$gid") or die "Cannot write $seqs_dir/$gid: $!";
-	my $skip;
-	while (my($id, $def, $seq) = read_next_fasta_seq(\*P))
-	{
-	    if ($id =~ /^(fig\|[^|]+)/)
+	    open(SEQS, ">", "$seqs_dir/$gid") or die "Cannot write $seqs_dir/$gid: $!";
+	    my $skip;
+	    while (my($id, $def, $seq) = read_next_fasta_seq(\*P))
 	    {
-		if ($seq =~ /X{10}/)
+		if ($id =~ /^(fig\|[^|]+)/)
 		{
-		    warn "Skipping bad sequence $id from $prots at $.\n";
-		}
-		else
-		{
-		    print_alignment_as_fasta(\*SEQS, [$1, '', $seq]);
-		    $seq_len{$1} = length($seq);
-		}
-	    }
-	    else
-	    {
-		warn "Cannot parse $id from $prots at $.\n";
-	    }
-	}
-	close(SEQS);
-	close(P);
-
-	#
-	# Read the features.tab file to look up the gene names for possible
-	# hypothetical family naming.
-	#
-	# We also scan for contig sizes so we can tag truncated genes. 
-	#
-	my $tab = $opt->genome_dir . "/$gid/$gid.PATRIC.features.tab";
-	if (open(TAB, "<", $tab))
-	{
-	    my $key = <TAB>;
-	    chomp $key;
-	    my @hdrs = split(/\t/, $key);
-	    my $gene_idx = first_index { $_ eq 'gene' } @hdrs;
-	    my $id_idx = first_index { $_ eq 'patric_id' } @hdrs;
-	    my $ftype_idx = first_index { $_ eq 'feature_type' } @hdrs;
-	    my $acc_idx = first_index { $_ eq 'accession' } @hdrs;
-	    my $start_idx = first_index { $_ eq 'start' } @hdrs;
-	    my $end_idx = first_index { $_ eq 'end' } @hdrs;
-	    my $len_idx = first_index { $_ eq 'na_length' } @hdrs;
-
-	    if ($gene_idx < 0)
-	    {
-		warn "Could not find gene column in $tab. Headers are '$key'\n";
-	    }
-	    #
-	    # Scan once for contig lengths and gene nam
-	    while (<TAB>)
-	    {
-		chomp;
-		my @vals = split(/\t/);
-		my $id = $vals[$id_idx];
-		if (defined($gene_idx))
-		{
-		    my $gene = $vals[$gene_idx];
-		    print GENE_NAMES "$id\t$gene\n" if $gene;
-		}
-		if ($vals[$ftype_idx] eq 'source')
-		{
-		    $contig_len{$vals[$acc_idx]} = $vals[$len_idx];
-		}
-	    }
-	    seek(TAB, 0, 0);
-	    my $tried;
-	    while (<TAB>)
-	    {
-		chomp;
-		my @vals = split(/\t/);
-		my($id, $type, $start, $end, $acc) = @vals[$id_idx, $ftype_idx, $start_idx, $end_idx, $acc_idx];
-		
-		next unless $type eq 'CDS';
-		
-		my $len = $contig_len{$acc};
-		
-		if (!$len && !$tried)
-		{
-		    $tried = 1;
-		    #
-		    # Length missing means we need to read the contigs.
-		    #
-		    my $contigs = $opt->genome_dir . "/$gid/$gid.fna";
-		    if (open(C, "<", $contigs) )
+		    if ($seq =~ /X{10}/)
 		    {
-			while (my($id, $def, $seq) = read_next_fasta_seq(\*C))
-			{
-			    $contig_len{$id} = length($seq);
-			}
-			close(C);
+			warn "Skipping bad sequence $id from $prots at $.\n";
 		    }
 		    else
 		    {
-			warn "Cannot open $contigs: $!";
+			print_alignment_as_fasta(\*SEQS, [$1, '', $seq]);
+			$seq_len{$1} = length($seq);
 		    }
-		    $len = $contig_len{$acc};
-		    next unless $len;
 		}
-		
-		if ($start < 10 || $end < 10 || $start > $len - 10 || $end > $len - 10)
+		else
 		{
-		    print TRUNC join("\t", $id, $start, $end, $len), "\n";
+		    warn "Cannot parse $id from $prots at $.\n";
 		}
 	    }
+	    close(SEQS);
+	    close(P);
 	    
-	    close(TAB);
+	    #
+	    # Read the features.tab file to look up the gene names for possible
+	    # hypothetical family naming.
+	    #
+	    # We also scan for contig sizes so we can tag truncated genes. 
+	    #
+	    my $tab = $opt->genome_dir . "/$gid/$gid.PATRIC.features.tab";
+	    if (open(TAB, "<", $tab))
+	    {
+		my $key = <TAB>;
+		chomp $key;
+		my @hdrs = split(/\t/, $key);
+		my $gene_idx = first_index { $_ eq 'gene' } @hdrs;
+		my $id_idx = first_index { $_ eq 'patric_id' } @hdrs;
+		my $ftype_idx = first_index { $_ eq 'feature_type' } @hdrs;
+		my $acc_idx = first_index { $_ eq 'accession' } @hdrs;
+		my $start_idx = first_index { $_ eq 'start' } @hdrs;
+		my $end_idx = first_index { $_ eq 'end' } @hdrs;
+		my $len_idx = first_index { $_ eq 'na_length' } @hdrs;
+		
+		if ($gene_idx < 0)
+		{
+		    warn "Could not find gene column in $tab. Headers are '$key'\n";
+		}
+		#
+		# Scan once for contig lengths and gene nam
+		while (<TAB>)
+		{
+		    chomp;
+		    my @vals = split(/\t/);
+		    my $id = $vals[$id_idx];
+		    if (defined($gene_idx))
+		    {
+			my $gene = $vals[$gene_idx];
+			print GENE_NAMES "$id\t$gene\n" if $gene;
+		    }
+		    if ($vals[$ftype_idx] eq 'source')
+		    {
+			$contig_len{$vals[$acc_idx]} = $vals[$len_idx];
+		    }
+		}
+		seek(TAB, 0, 0);
+		my $tried;
+		while (<TAB>)
+		{
+		    chomp;
+		    my @vals = split(/\t/);
+		    my($id, $type, $start, $end, $acc) = @vals[$id_idx, $ftype_idx, $start_idx, $end_idx, $acc_idx];
+		    
+		    next unless $type eq 'CDS';
+		    
+		    my $len = $contig_len{$acc};
+		    
+		    if (!$len && !$tried)
+		    {
+			$tried = 1;
+			#
+			# Length missing means we need to read the contigs.
+			#
+			my $contigs = $opt->genome_dir . "/$gid/$gid.fna";
+			if (open(C, "<", $contigs) )
+			{
+			    while (my($id, $def, $seq) = read_next_fasta_seq(\*C))
+			    {
+				$contig_len{$id} = length($seq);
+			    }
+			    close(C);
+			}
+			else
+			{
+			    warn "Cannot open $contigs: $!";
+			}
+			$len = $contig_len{$acc};
+			next unless $len;
+		    }
+		    
+		    if ($start < 10 || $end < 10 || $start > $len - 10 || $end > $len - 10)
+		    {
+			print TRUNC join("\t", $id, $start, $end, $len), "\n";
+		    }
+		}
+		
+		close(TAB);
+	    }
+	    else
+	    {
+		warn "Could not open $tab: $!";
+	    }
 	}
 	else
 	{
-	    warn "Could not open $tab: $!";
-	}
+	    #
+	    # Query for contig lengths.
+	    #
+	    my %seq_len;
 
+	    my $ua = LWP::UserAgent->new;
+	    my $block = 25000;
+	    my $start_idx = 0;
+	    while (1)
+	    {
+		my $q = make_query(q => "genome_id:$gid",
+				   fl => "sequence_type,length,accession",
+				   rows => $block,
+				   start => $start_idx,
+				  );
+		
+		my $url = $opt->solr_url . "/genome_sequence/?$q";
+		
+		# print STDERR "$url\n";
+		my $res = $ua->get($url,
+				   'Content-type' => 'application/solrquery+x-www-form-urlencoded',
+				   'Accept' => 'application/solr+json',
+				  );
+		if (!$res->is_success)
+		{
+		    die "Failed: $url " . $res->status_line;
+		}
+		
+		my $range = $res->header('content-range');
+		# print "Range: $range\n";
+		my($tstart, $tstop, $tlast) = $range =~ m,(\d+)-(\d+)/(\d+),;
+		
+		my $r = $res->content;
+		my $data = decode_json($r);
+		
+		my $items = $data->{response}->{docs};
+		# print Dumper($items);
+		for my $item (@$items)
+		{
+		    $seq_len{$item->{accession}} = $item->{length};
+		}
+		if ($tstop < $tlast)
+		{
+		    $start_idx = $tstop;
+		}
+		else
+		{
+		    last;
+		}
+	    }
+	    #
+	    # Now we can query the features.
+	    #
+	    $start_idx = 0;
+	    my %seq_id;
+	    while (1)
+	    {
+		my $q = make_query(q => "genome_id:$gid feature_type:CDS annotation:PATRIC",
+				   fl => "patric_id,start,end,accession,gene,na_length,aa_sequence_md5",
+				   rows => $block,
+				   start => $start_idx,
+				  );
+		
+		my $url = $opt->solr_url . "/genome_feature/?$q";
+		
+		# print STDERR "$url\n";
+		my $res = $ua->get($url,
+				   'Content-type' => 'application/solrquery+x-www-form-urlencoded',
+				   'Accept' => 'application/solr+json',
+				  );
+		if (!$res->is_success)
+		{
+		    die "Failed: " . $res->status_line;
+		}
+		
+		my $range = $res->header('content-range');
+		# print "Range: $range\n";
+		my($tstart, $tstop, $tlast) = $range =~ m,(\d+)-(\d+)/(\d+),;
+		
+		my $r = $res->content;
+		my $data = decode_json($r);
+		
+		my $items = $data->{response}->{docs};
+
+		for my $item (@$items)
+		{
+		    my($id, $start, $end, $acc, $gene, $md5) = @$item{qw(patric_id start end accession gene aa_sequence_md5)};
+		    # print "id=$id start=$start end=$end ac=$acc gene=$gene $md5\n";
+		    $seq_id{$md5} = $id;
+
+		    my $len = $seq_len{$acc};
+
+		    print GENE_NAMES "$id\t$gene\n" if $gene;
+		    
+		    die Dumper($item) unless defined($len);
+		    if ($start < 10 || $end < 10 || $start > $len - 10 || $end > $len - 10)
+		    {
+			print TRUNC join("\t", $id, $start, $end, $len), "\n";
+		    }
+		}
+
+		if ($tstop < $tlast)
+		{
+		    $start_idx = $tstop;
+		}
+		else
+		{
+		    last;
+		}
+	    }
+	    #
+	    # And finally the sequences, in batches.
+	    #
+	    my $batch_size = 200;
+	    my @seqs = keys %seq_id;
+	    open(SEQS, ">", "$seqs_dir/$gid") or die "Cannot write $seqs_dir/$gid: $!";
+	    while (@seqs)
+	    {
+		my @batch = splice(@seqs, 0, $batch_size);
+		
+		$start_idx = 0;
+		while (1)
+		{
+		    my $q = make_query(q => "md5:(@batch)",
+				       fl => "md5,sequence",
+				       rows => $block,
+				       start => $start_idx,
+				      );
+		
+		    my $url = $opt->solr_url . "/feature_sequence/?$q";
+		    
+		    # print STDERR "$url\n";
+		    my $res = $ua->get($url,
+				       'Content-type' => 'application/solrquery+x-www-form-urlencoded',
+				       'Accept' => 'application/solr+json',
+				      );
+		    if (!$res->is_success)
+		    {
+			die "Failed: " . $res->status_line;
+		    }
+		    
+		    my $range = $res->header('content-range');
+		    # print "Range: $range\n";
+		    my($tstart, $tstop, $tlast) = $range =~ m,(\d+)-(\d+)/(\d+),;
+		    
+		    my $r = $res->content;
+		    my $data = decode_json($r);
+		    
+		    my $items = $data->{response}->{docs};
+		    
+		    for my $item (@$items)
+		    {
+			my($md5, $seq) = @$item{qw(md5 sequence)};
+			print_alignment_as_fasta(\*SEQS, [$seq_id{$md5}, '', $seq]);
+		    }
+		
+		    if ($tstop < $tlast)
+		    {
+			$start_idx = $tstop;
+		    }
+		    else
+		    {
+			last;
+		    }
+		}
+	    }
+	    close(SEQS);
+	}
 	$tied->sync();
 	print GFILE "$gid\n";
 	print GNAME "$gid\t$gnames{$gid}\n";
@@ -302,17 +464,80 @@ sub get_genomes
     }
 
     my %by_genus;
+
     #
-    # We hardcode a policy change here where anything in viruses gets
-    # stuffed in the Viruses directory.
+    # We support viruses and phages by creating a single data directory Phages
+    # that incorporates all genomes in the NCBI division 'Phages'.
     #
-    # To make this workable, collect up all the data and postprocess.
+    # Other viruses go into their own genus directories.
     #
+
+    #
+    # We begin by pulling all of the taxonomic data for genomes at the genus level.
+    #
+
+    my %genus_data;
 
     while (1)
     {
-	my $q = make_query(q => "$rank:* public:1",
-			   fl => "$rank,genome_id,genome_name,domain,kingdom,genome_quality,genome_status",
+	my $q = make_query(q => "taxon_rank:genus",
+			   fl => "taxon_id,taxon_name,genetic_code,division",
+			   rows => $block,
+			   start => $start,
+			  );
+
+	my $url = $opt->solr_url . "/taxonomy/?$q";
+	
+	print STDERR "$url\n";
+	my $res = $ua->get($url,
+			   'Content-type' => 'application/solrquery+x-www-form-urlencoded',
+			   'Accept' => 'application/solr+json',
+			  );
+	if (!$res->is_success)
+	{
+	    die "Failed: " . $res->status_line;
+	}
+
+	my $range = $res->header('content-range');
+	print "Range: $range\n";
+	my($tstart, $tstop, $tlast) = $range =~ m,(\d+)-(\d+)/(\d+),;
+
+	my $r = $res->content;
+	my $data = decode_json($r);
+
+	my $items = $data->{response}->{docs};
+
+	for my $item (@$items)
+	{
+	    $genus_data{$item->{taxon_id}} = $item;
+	}
+
+	#print Dumper($items);
+
+	if ($tstop < $tlast)
+	{
+	    $start = $tstop;
+	}
+	else
+	{
+	    last;
+	}
+    }
+    open(G, ">", "$base_data_dir/genus_data.json") or die "Cannot write $base_data_dir/genus_data.json: $!";
+    print G $json->encode(\%genus_data);
+    
+    #
+    # Now scan the genomes. With the genus data collected above, we can process and classify
+    # the genomes in a single pass
+    #
+
+    my %gmap;
+
+    while (1)
+    {
+	#my $q = make_query(q => "$rank:* public:1",
+	my $q = make_query(q => "$rank:* genome_id:2699468.4",
+			   fl => "$rank,genome_id,genome_name,domain,kingdom,genome_quality,genome_status,genetic_code,taxon_lineage_ids,owner,public",
 			   rows => $block,
 			   start => $start,
 			   sort => "$rank asc",
@@ -342,16 +567,24 @@ sub get_genomes
 	my $items = $data->{response}->{docs};
 
 	my $limit_genera = defined($opt->genus);
+#	print Dumper($items);
+
 
 	for my $item (@$items)
 	{
-	    my($genus, $gid, $name, $kingdom, $quality, $status) = @$item{$rank, qw(genome_id genome_name kingdom genome_quality genome_status)};
+	    my($genus, $gid, $name, $kingdom, $quality, $status, $genetic_code, $lineage, $public, $owner) = @$item{$rank, qw(genome_id genome_name kingdom genome_quality genome_status genetic_code taxon_lineage_ids public owner)};
+
+	    next unless $public || $owner eq 'sars2_bvbrc@patricbrc.org';
+	    if ($owner eq 'sars2_bvbrc@patricbrc.org')
+	    {
+		print Dumper($item);
+	    }
 
 	    next if $limit_genomes && !$limit_genomes->{$gid};
 
 	    if ($quality ne 'Good' && $kingdom ne 'Viruses')
 	    {
-		warn "Skipping $gid due to quality=$quality and kingdom=$kingdom\n";
+		# warn "Skipping $gid $name due to quality=$quality and kingdom=$kingdom\n";
 		next;
 	    }
 
@@ -380,8 +613,35 @@ sub get_genomes
 	    next if $genus eq '""';
 	    next if $genus eq '';
 
-	    my $ref_genus = ($kingdom eq 'Viruses') ? 'Viruses' : $genus;
+	    my $gdata;
+	    for my $tid (@{$lineage})
+	    {
+		$gdata = $genus_data{$tid};
+		last if $gdata;
+	    }
+	    if (!$gdata)
+	    {
+		warn "Skipping $gid $name: no genus data \n";
+		next;
+	    }
 
+	    my $genus_taxid = $gdata->{taxon_id};
+	    my $ref_genus = "$genus-$genus_taxid";
+	    if ($gdata->{division} eq 'Phages')
+	    {
+		$ref_genus = 'Phages';
+	    }
+	    else
+	    {
+		if (exists($gmap{$ref_genus}))
+		{
+		    if ($gmap{$ref_genus} ne $gdata->{taxon_id})
+		    {
+			die "$genus is not unique $gmap{$ref_genus} $gdata->{taxon_id}";
+		    }
+		}
+		$gmap{$ref_genus} = $gdata->{taxon_id};
+	    }
 	    push(@{$by_genus{$ref_genus}}, $gid);
 	}
 
@@ -404,7 +664,7 @@ sub get_genomes
 	    push(@out, [$genus, $list]);
 	}
     }
-	
+
     return @out;
 }
 
