@@ -25,7 +25,6 @@ family computation process.
 use strict;
 use Data::Dumper;
 use Getopt::Long;
-use SeedEnv;
 
 use Getopt::Long::Descriptive;
 

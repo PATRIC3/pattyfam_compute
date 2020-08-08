@@ -89,6 +89,8 @@ while (my $f = readdir(D))
     my $sz = -s _;
     if ($sz == 0)
     {
+	open(F, ">", $mcl_path) or die "Cannot write $mcl_path: $!";
+	close(F);
 	next;
     }
     else

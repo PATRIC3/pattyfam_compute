@@ -123,7 +123,8 @@ sub work
     close($tmp);
     my @cmd = ("curl", "-s", "--data-binary", '@-', "-o", "$tmp", $url);
     # my @cmd = ('kmer_search', @url, "-d", $kmer_dir, "-a", "-o", "$tmp");
-    
+
+    # print "@cmd\n"
     open(SEQS, "<", $seqs) or die "Cannot open $seqs: $!";
     open(KS, "|-", @cmd) or die "Cannot open @cmd: $!";
     my %seen;

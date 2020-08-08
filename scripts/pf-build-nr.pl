@@ -24,15 +24,13 @@
 
 # usage: build_nr
 
+use strict;
 use IPC::Run qw(start finish);
 use DB_File;
 use Getopt::Long::Descriptive;
+use gjoseqlib;
 
 use Digest::MD5 'md5_hex';
-
-my $tmpD = "$FIG_Config::temp";
-my $tmp  = "$tmpD/tmp$$";
-#my $tmp  = "$tmpD/tmp28968";
 
 my($opt, $usage) = describe_options("%c %o SourcesInFile NR PEGsynonyms nr-len-btree fig-ids",
 #				    ["index=s", "Create indexed peg synonyms in file.t and file.f"],
@@ -65,8 +63,6 @@ my($len_btree_file, $fig_ids_file);
 )
     || die $usage;
 
-use strict;
-use FIG;
 
 $| = 1;
 
@@ -270,7 +266,8 @@ sub handle_sequence
     if (!exists($md5_seen{$d}))
     {
 	$md5_seen{$d} = 1;
-	&FIG::display_id_and_seq($mid, \$seq, \*NR);
+
+	print_alignment_as_fasta(\*NR, [$mid, '', $seq]);
 	$seq_count++;
     }
     my $len = length($seq);

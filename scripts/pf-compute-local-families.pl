@@ -28,7 +28,7 @@ use Getopt::Long::Descriptive;
 use Data::Dumper;
 
 my($opt, $usage) = describe_options("%c %o kmer-dir genus-data-dir",
-				    ["logfile|l" => "Log file"],
+				    ["logfile|l=s" => "Log file"],
 				    ["identity=s" => "Identity for BLAST fallback", { default => 0.5 }],
 				    ["inflation=s" => "MCL inflation", { default => 3.0 }],
 				    ["good-cutoff=s" => "Fraction of members with unique genomes required to be 'good'", { default => 0.9 }],
@@ -236,12 +236,21 @@ print LOG "finish pf-compute-kmer-clusters $tend $elap\n";
 my $tstart = gettimeofday;
 print LOG "start pf-compute-blast-clusters $tstart\n";
 
-my $cmd = ["pf-compute-blast-clusters",
-	   "--parallel", $opt->parallel,
-	   $work_dir, "$fam_dir/gene.names", "$fam_dir/nr-seqs",
-	   "$fam_dir/unclassified", "$fam_dir/blast.clusters"];
-print STDERR "Run: @$cmd\n";
-run($cmd) or die "pf-compute-blast-clusters failed: $?";
+if (-s "$fam_dir/unclassified")
+{
+    my $cmd = ["pf-compute-blast-clusters",
+	       "--parallel", $opt->parallel,
+	       $work_dir, "$fam_dir/gene.names", "$fam_dir/nr-seqs",
+	       "$fam_dir/unclassified", "$fam_dir/blast.clusters"];
+    print STDERR "Run: @$cmd\n";
+    run($cmd) or die "pf-compute-blast-clusters failed: $?";
+}
+else
+{
+    print STDERR "No unclassified proteins to process\n";
+    open(F, ">", "$fam_dir/blast.clusters") or die "Cannot write $fam_dir/blast.clusters: $!";
+    close(F);
+}
 
 my $tend = gettimeofday;
 my $elap = $tend - $tstart;

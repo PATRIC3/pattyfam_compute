@@ -45,7 +45,6 @@ include singletons).  An 8-column, tab-separated table is written:
 use strict;
 use Data::Dumper;
 use Getopt::Long;
-use SeedEnv;
 use gjoseqlib;
 use gjostat;
 use DB_File;

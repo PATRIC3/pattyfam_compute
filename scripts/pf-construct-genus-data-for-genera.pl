@@ -44,6 +44,16 @@ use IPC::Run 'run';
 use gjoseqlib;
 use DB_File;
 
+
+my @auth;
+if (open(P, "<", "$ENV{HOME}/.patric_token"))
+{
+    my $t = <P>;
+    chomp $t;
+    close(P);
+    @auth = ("Authorization", $t);
+}
+
 my($opt, $usage) = describe_options("%c %o data-dir",
 				    ['rank=s', "Use the given taxon rank for grouping (defaults to genus)",
 				 		{ default => 'genus' }],
@@ -69,20 +79,29 @@ my @genome_data = get_genomes($opt, \%gnames);
 
 pareach \@genome_data, sub {
     my($ent) = @_;
-    my($genus, $genome_ids) = @$ent;
+    my($genus, $genome_ids, $genus_taxon) = @$ent;
 
     my $data_dir = "$base_data_dir/$genus";
     die "Data directory $data_dir already exists\n" if -d $data_dir;
 
     my $seqs_dir = "$data_dir/Seqs";
+    my $na_seqs_dir = "$data_dir/nr-seqs-dna";
 
-    make_path($data_dir, $seqs_dir);
+    make_path($data_dir, $seqs_dir, $na_seqs_dir);
+
+    if ($genus_taxon)
+    {
+	open(P, ">", "$data_dir/GENUS_TAXON_ID") or die "cannot write $data_dir/GENUS_TAXON_ID: $!";
+	print P "$genus_taxon\n";
+	close(P);
+    }
 
     open(GFILE, ">", "$data_dir/genomes") or die "Cannot write $data_dir/genomes: $!";
     open(GNAME, ">", "$data_dir/genome.names") or die "Cannot write $data_dir/genome.names: $!";
     open(SOURCES, ">", "$data_dir/sources") or die "Cannot write $data_dir/sources: $!";
     open(GENE_NAMES, ">", "$data_dir/gene.names") or die "Cannot write $data_dir/gene_names: $!";
     open(TRUNC, ">", "$data_dir/truncated.genes") or die "Cannot write $data_dir/truncated.genes: $!";
+    open(BAD_SEQS, ">", "$data_dir/bad.seqs") or die "Cannot write $data_dir/bad.seqs: $!";
 
     my %seq_len;
     my $tied = tie %seq_len, 'DB_File', "$data_dir/seq_len.db", O_RDWR | O_CREAT, 0664, $DB_BTREE;
@@ -106,7 +125,7 @@ pareach \@genome_data, sub {
 		{
 		    if ($seq =~ /X{10}/)
 		    {
-			warn "Skipping bad sequence $id from $prots at $.\n";
+			print BAD_SEQS "Skipping bad sequence $id from $prots at $.\n";
 		    }
 		    else
 		    {
@@ -235,6 +254,7 @@ pareach \@genome_data, sub {
 		my $res = $ua->get($url,
 				   'Content-type' => 'application/solrquery+x-www-form-urlencoded',
 				   'Accept' => 'application/solr+json',
+				   @auth
 				  );
 		if (!$res->is_success)
 		{
@@ -267,11 +287,12 @@ pareach \@genome_data, sub {
 	    # Now we can query the features.
 	    #
 	    $start_idx = 0;
-	    my %seq_id;
+	    my %aa_seq_id;
+	    my %na_seq_id;
 	    while (1)
 	    {
 		my $q = make_query(q => "genome_id:$gid feature_type:CDS annotation:PATRIC",
-				   fl => "patric_id,start,end,accession,gene,na_length,aa_sequence_md5",
+				   fl => "patric_id,start,end,accession,gene,na_length,aa_sequence_md5,na_sequence_md5",
 				   rows => $block,
 				   start => $start_idx,
 				  );
@@ -282,6 +303,7 @@ pareach \@genome_data, sub {
 		my $res = $ua->get($url,
 				   'Content-type' => 'application/solrquery+x-www-form-urlencoded',
 				   'Accept' => 'application/solr+json',
+				   @auth
 				  );
 		if (!$res->is_success)
 		{
@@ -299,9 +321,11 @@ pareach \@genome_data, sub {
 
 		for my $item (@$items)
 		{
-		    my($id, $start, $end, $acc, $gene, $md5) = @$item{qw(patric_id start end accession gene aa_sequence_md5)};
-		    # print "id=$id start=$start end=$end ac=$acc gene=$gene $md5\n";
-		    $seq_id{$md5} = $id;
+		    my($id, $start, $end, $acc, $gene, $aa_md5, $na_md5) = @$item{qw(patric_id start end accession gene aa_sequence_md5 na_sequence_md5)};
+		    # $id =~ s/\.CDS\./.peg./;
+		    # print "id=$id start=$start end=$end ac=$acc gene=$gene $aa_md5 $na_md5\n";
+		    $aa_seq_id{$aa_md5} = $id;
+		    $na_seq_id{$na_md5} = $id;
 
 		    my $len = $seq_len{$acc};
 
@@ -327,8 +351,10 @@ pareach \@genome_data, sub {
 	    # And finally the sequences, in batches.
 	    #
 	    my $batch_size = 200;
-	    my @seqs = keys %seq_id;
-	    open(SEQS, ">", "$seqs_dir/$gid") or die "Cannot write $seqs_dir/$gid: $!";
+	    my @seqs = (keys %na_seq_id, keys %aa_seq_id);
+	    
+	    open(AA_SEQS, ">", "$seqs_dir/$gid") or die "Cannot write $seqs_dir/$gid: $!";
+	    open(NA_SEQS, ">", "$na_seqs_dir/$gid") or die "Cannot write $na_seqs_dir/$gid: $!";
 	    while (@seqs)
 	    {
 		my @batch = splice(@seqs, 0, $batch_size);
@@ -348,6 +374,7 @@ pareach \@genome_data, sub {
 		    my $res = $ua->get($url,
 				       'Content-type' => 'application/solrquery+x-www-form-urlencoded',
 				       'Accept' => 'application/solr+json',
+				       @auth
 				      );
 		    if (!$res->is_success)
 		    {
@@ -362,11 +389,25 @@ pareach \@genome_data, sub {
 		    my $data = decode_json($r);
 		    
 		    my $items = $data->{response}->{docs};
-		    
+
 		    for my $item (@$items)
 		    {
 			my($md5, $seq) = @$item{qw(md5 sequence)};
-			print_alignment_as_fasta(\*SEQS, [$seq_id{$md5}, '', $seq]);
+			if (my $id = $aa_seq_id{$md5})
+			{
+			    if ($seq =~ /X{10}/)
+			    {
+				print BAD_SEQS "Skipping bad sequence $id\n";
+			    }
+			    else
+			    {
+				print_alignment_as_fasta(\*AA_SEQS, [$id, '', $seq]);
+			    }
+			}
+			else
+			{
+			    print_alignment_as_fasta(\*NA_SEQS, [$na_seq_id{$md5}, '', $seq]);
+			}
 		    }
 		
 		    if ($tstop < $tlast)
@@ -396,7 +437,7 @@ pareach \@genome_data, sub {
     close(TRUNC);
 
     mkdir("$data_dir/nr") or die "cannot mkdir $data_dir/nr: $!";
-    my $rc = system("build_nr_md5", "$data_dir/sources", "$data_dir/nr/nr",
+    my $rc = system("pf-build-nr", "$data_dir/sources", "$data_dir/nr/nr",
 		    "$data_dir/nr/peg.synonyms", "$data_dir/nr/nr-len.btree", "$data_dir/nr/figids");
     if ($rc == 0)
     {
@@ -445,6 +486,7 @@ sub get_genomes
     # print Dumper(\%bad_genome);
 
     my $limit_genomes;
+    my $gquery = "";
     if ($opt->genomes)
     {
 	$limit_genomes = {};
@@ -461,6 +503,7 @@ sub get_genomes
 	    }
 	}
 	close(G);
+	$gquery = "genome_id:(" . join(" ", keys %$limit_genomes) . ")";
     }
 
     my %by_genus;
@@ -492,6 +535,7 @@ sub get_genomes
 	my $res = $ua->get($url,
 			   'Content-type' => 'application/solrquery+x-www-form-urlencoded',
 			   'Accept' => 'application/solr+json',
+			   @auth
 			  );
 	if (!$res->is_success)
 	{
@@ -533,13 +577,14 @@ sub get_genomes
 
     my %gmap;
 
+    my $start_idx = 0;
     while (1)
     {
 	#my $q = make_query(q => "$rank:* public:1",
-	my $q = make_query(q => "$rank:* genome_id:2699468.4",
+	my $q = make_query(q => "public:* $gquery",
 			   fl => "$rank,genome_id,genome_name,domain,kingdom,genome_quality,genome_status,genetic_code,taxon_lineage_ids,owner,public",
 			   rows => $block,
-			   start => $start,
+			   start => $start_idx,
 			   sort => "$rank asc",
 			  );
 
@@ -549,7 +594,9 @@ sub get_genomes
 	my $res = $ua->get($url,
 			   'Content-type' => 'application/solrquery+x-www-form-urlencoded',
 			   'Accept' => 'application/solr+json',
+			   @auth
 			  );
+
 	if (!$res->is_success)
 	{
 	    die "Failed: " . $res->status_line;
@@ -575,10 +622,10 @@ sub get_genomes
 	    my($genus, $gid, $name, $kingdom, $quality, $status, $genetic_code, $lineage, $public, $owner) = @$item{$rank, qw(genome_id genome_name kingdom genome_quality genome_status genetic_code taxon_lineage_ids public owner)};
 
 	    next unless $public || $owner eq 'sars2_bvbrc@patricbrc.org';
-	    if ($owner eq 'sars2_bvbrc@patricbrc.org')
-	    {
-		print Dumper($item);
-	    }
+#	    if ($owner eq 'sars2_bvbrc@patricbrc.org')
+#	    {
+#		print Dumper($item);
+#	    }
 
 	    next if $limit_genomes && !$limit_genomes->{$gid};
 
@@ -647,7 +694,7 @@ sub get_genomes
 
 	if ($tstop < $tlast)
 	{
-	    $start = $tstop;
+	    $start_idx = $tstop;
 	}
 	else
 	{
@@ -661,7 +708,7 @@ sub get_genomes
 
 	if (@$list >= $opt->min_genomes)
 	{
-	    push(@out, [$genus, $list]);
+	    push(@out, [$genus, $list, $gmap{$genus}]);
 	}
     }
 

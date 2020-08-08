@@ -24,6 +24,7 @@ the duplicates.
 use strict;
 use gjoseqlib;
 use Getopt::Long::Descriptive;
+use Data::Dumper;
 
 my($opt, $usage) = describe_options("%c %o genus-data-dir",
 				    ["genome-dir=s", "Directory holding PATRIC genome data", { default => "/vol/patric3/downloads/genomes" }],
@@ -84,7 +85,7 @@ my %genomes;
 # gnl|md5|ffdb15eded2cbc4a89b6e9ece42b30e9,108  fig|1005475.3.peg.3229,108;fig|1182692.3.peg.3088,108;fig|1182722.3.peg.1758,108
 while (<PEGSYN>)
 {
-    if (/^([^,]+),\d+\t(fig\|(\d+\.\d+)\.peg\.\d+),\d+(.*)/)
+    if (/^([^,]+),\d+\t(fig\|(\d+\.\d+)\.(?:CDS|peg)\.\d+),\d+(.*)/)
     {
 	my $md5 = $1;
 	my $ref = $2;
@@ -97,7 +98,7 @@ while (<PEGSYN>)
 	$g{$md5} = $genome;
 
 	my @pegs;
-	while ($rest =~ /(fig\|\d+\.\d+\.peg\.\d+)/mg)
+	while ($rest =~ /(fig\|\d+\.\d+\.(?:CDS|peg)\.\d+)/mg)
 	{
 	    push(@pegs, $1);
 	}
@@ -166,23 +167,29 @@ closedir(DH);
 
 while (my($genome, $ids) = each %genomes)
 {
+    next if -s "$dna_dir/$genome";
+    
     my $dna = $opt->genome_dir . "/$genome/$genome.PATRIC.ffn";
-    if (!open(G, "<", $dna))
+    open(O, ">", "$dna_dir/$genome") or die "cannot write $dna_dir/$genome: $!";
+
+    if (open(G, "<", $dna))
+    {
+	while (my($idx, $def, $seq) = read_next_fasta_seq(\*G))
+	{
+	    my($id) = $idx =~ (/(fig\|\d+\.\d+\.[^.]+\.\d+)/);
+	    
+	    if (delete $ids->{$id})
+	    {
+		write_fasta(\*O, [$id, $def, $seq]);
+	    }
+	}
+    }
+    else
     {
 	warn "Cannot open $dna: $!";
 	next;
     }
-    open(O, ">", "$dna_dir/$genome") or die "cannot write $dna_dir/$genome: $!";
-    
-    while (my($idx, $def, $seq) = read_next_fasta_seq(\*G))
-    {
-	my($id) = $idx =~ (/(fig\|\d+\.\d+\.[^.]+\.\d+)/);
 
-	if (delete $ids->{$id})
-	{
-	    write_fasta(\*O, [$id, $def, $seq]);
-	}
-    }
     close(O);
     close(G);
 }
