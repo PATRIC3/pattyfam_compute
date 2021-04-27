@@ -59,8 +59,11 @@ my($opt, $usage) = describe_options("%c %o data-dir",
 				 		{ default => 'genus' }],
 				    ['genus|g=s@', 'Limit to the given genus. May be repeated for multiple genera.'],
 				    ['genomes=s', 'Limit to the genomes in this file'],
+				    ['phages!', 'Collect phages', { default => 1 }],
+				    ['check-quality!', 'Only use genomes with good quality', { default => 1 }],
 				    ['bad-genome|b=s@', "A bad genome. Don't use it.", { default => ['340189.4'] }],
 				    ["min-genomes|m=i", "Minimum number of genomes required in a genus to build families", { default => 4 }],
+				    ["max-genomes|M=i", "Maximum number of genomes to be placed in a genus", { default => 8000 }],
 				    ["solr-url|d=s", "Solr API url", { default => 'https://www.patricbrc.org/api' }],
 				    ["parallel|p=i", "Run with this many procs", { default => 1 }],
 				    ["genome-dir=s", "Directory holding PATRIC genome data", { default => "/vol/patric3/downloads/genomes" }],
@@ -72,12 +75,14 @@ die($usage->text) if @ARGV != 1;
 
 my $base_data_dir = shift;
 
+-d $base_data_dir or die "Data directory $base_data_dir does not exist\n";
+
 my $json = JSON::XS->new->pretty(1);
 
 my %gnames;
-my @genome_data = get_genomes($opt, \%gnames);
+my ($genome_data, $all_genomes) = get_genomes($opt, \%gnames);
 
-pareach \@genome_data, sub {
+pareach $genome_data, sub {
     my($ent) = @_;
     my($genus, $genome_ids, $genus_taxon) = @$ent;
 
@@ -576,13 +581,13 @@ sub get_genomes
     #
 
     my %gmap;
+    my %all_genomes;
 
     my $start_idx = 0;
     while (1)
     {
-	#my $q = make_query(q => "$rank:* public:1",
-	my $q = make_query(q => "public:* $gquery",
-			   fl => "$rank,genome_id,genome_name,domain,kingdom,genome_quality,genome_status,genetic_code,taxon_lineage_ids,owner,public",
+	my $q = make_query(defined($gquery) ? (q => "public:* $gquery") : (q => "$rank:* public:1"),
+			   fl => "$rank,genome_id,genome_name,domain,kingdom,genome_quality,genome_status,genetic_code,taxon_lineage_ids,owner,public,contigs,species",
 			   rows => $block,
 			   start => $start_idx,
 			   sort => "$rank asc",
@@ -614,8 +619,7 @@ sub get_genomes
 	my $items = $data->{response}->{docs};
 
 	my $limit_genera = defined($opt->genus);
-#	print Dumper($items);
-
+	# print STDERR Dumper($items);
 
 	for my $item (@$items)
 	{
@@ -625,11 +629,13 @@ sub get_genomes
 #	    if ($owner eq 'sars2_bvbrc@patricbrc.org')
 #	    {
 #		print Dumper($item);
-#	    }
+	    #	    }
+
+	    $all_genomes{$gid} = $item;
 
 	    next if $limit_genomes && !$limit_genomes->{$gid};
 
-	    if ($quality ne 'Good' && $kingdom ne 'Viruses')
+	    if (($opt->check_quality && $quality ne 'Good') && $kingdom ne 'Viruses')
 	    {
 		# warn "Skipping $gid $name due to quality=$quality and kingdom=$kingdom\n";
 		next;
@@ -642,7 +648,11 @@ sub get_genomes
 		print STDERR Dumper($item);
 		next;
 	    }
-	    if ($limit_genera && $kingdom ne 'Viruses')
+	    #
+	    # We used to have kingdom ne Viruses; that ended up collecting
+	    # all the viruses even if we limited genera. Seems wrong.
+	    #
+	    if ($limit_genera)
 	    {
 		my $ok;
 		for my $x (@{$opt->genus})
@@ -674,7 +684,7 @@ sub get_genomes
 
 	    my $genus_taxid = $gdata->{taxon_id};
 	    my $ref_genus = "$genus-$genus_taxid";
-	    if ($gdata->{division} eq 'Phages')
+	    if ($gdata->{division} eq 'Phages' && $opt->phages)
 	    {
 		$ref_genus = 'Phages';
 	    }
@@ -706,13 +716,51 @@ sub get_genomes
     {
 	my $list = $by_genus{$genus};
 
-	if (@$list >= $opt->min_genomes)
+	next if (@$list < $opt->min_genomes);
+
+	#
+	# If the genus is too large, we need to shrink by choosing
+	# genomes with the smallest number of contigs.
+	#
+	
+	if (@$list > $opt->max_genomes)
 	{
-	    push(@out, [$genus, $list, $gmap{$genus}]);
+	    print "Limiting $genus to " . $opt->max_genomes . "\n";
+	    my %by_species;
+	    my @sorted = map { $all_genomes{$_} } sort { $all_genomes{$a}->{contigs} <=> $all_genomes{$b}->{contigs} } @$list;
+	    for my $s (@sorted)
+	    {
+		push(@{$by_species{$s->{species}}}, $s);
+		# print join("\t", $s, $all_genomes{$s}->{contigs}, $all_genomes{$s}->{species}, $all_genomes{$s}->{genome_name}), "\n";
+	    }
+	    my @new_list;
+	OUTER:
+	    while (keys %by_species)
+	    {
+		for my $species (keys %by_species)
+		{
+		    my $list = $by_species{$species};
+		    my $ent = shift @$list;
+		    push(@new_list, $ent);
+		    if (@$list == 0)
+		    {
+			delete $by_species{$species};
+		    }
+		    last OUTER if @new_list >= $opt->max_genomes;
+		}
+	    }
+	    # for my $ent (@new_list)
+	    # {
+	    # 	print join("\t", $ent->{genome_id}, $ent->{contigs}, $ent->{species},
+	    # 		   $ent->{genome_name}), "\n";
+	    # }
+	    @$list = map { $_->{genome_id} } @new_list;
 	}
+	
+	push(@out, [$genus, $list, $gmap{$genus}]);
     }
 
-    return @out;
+    return \@out, \%all_genomes;
 }
 
 sub make_query
