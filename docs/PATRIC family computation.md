@@ -75,3 +75,8 @@ The method for selecting pegs is also a parameter.
 Given the set of fasta files, we use the kmer distance clustering algorithm to
 compute suggested family merges.
 
+
+== NOTES
+
+Add a p3x-compute-kmer-distance program that encapsulates the start-kser / load / pull matrix functionality
+
