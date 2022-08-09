@@ -124,7 +124,7 @@ sub work
     my @cmd = ("curl", "-s", "--data-binary", '@-', "-o", "$tmp", $url);
     # my @cmd = ('kmer_search', @url, "-d", $kmer_dir, "-a", "-o", "$tmp");
 
-    # print "@cmd\n"
+    print "@cmd\n";
     open(SEQS, "<", $seqs) or die "Cannot open $seqs: $!";
     open(KS, "|-", @cmd) or die "Cannot open @cmd: $!";
     my %seen;
@@ -138,7 +138,6 @@ sub work
     }
     close(SEQS);
     close(KS) or die "Error on close of @cmd: $! $?";
-    
     #
     # Read generated calls to enable logging of uncalled IDs
     #
@@ -149,7 +148,6 @@ sub work
     # We use this here to remove the process-call overhead that
     # we have with a lot of small files.
     #
-    
     open(TMP, "<", "$tmp") or die "Cannot read $tmp: $!";
     while (<TMP>)
     {
@@ -176,7 +174,7 @@ sub work
 	}
     }
     close(TMP);
-    
+
     for my $id (keys %seen)
     {
 	print $uncalled "$id\n";

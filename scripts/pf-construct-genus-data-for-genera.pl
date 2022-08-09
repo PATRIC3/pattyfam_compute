@@ -33,6 +33,7 @@ use Getopt::Long::Descriptive;
 use List::MoreUtils 'first_index';
 use Data::Dumper;
 use URI;
+use URI::Escape;
 use JSON::XS;
 use DBI;
 #
@@ -62,6 +63,7 @@ my($opt, $usage) = describe_options("%c %o data-dir",
 				    ['phages!', 'Collect phages', { default => 1 }],
 				    ['check-quality!', 'Only use genomes with good quality', { default => 1 }],
 				    ['bad-genome|b=s@', "A bad genome. Don't use it.", { default => ['340189.4'] }],
+				    ["min-cds=i", "Minimum number of CDS features required to build families"],
 				    ["min-genomes|m=i", "Minimum number of genomes required in a genus to build families", { default => 4 }],
 				    ["max-genomes|M=i", "Maximum number of genomes to be placed in a genus", { default => 8000 }],
 				    ["solr-url|d=s", "Solr API url", { default => 'https://www.patricbrc.org/api' }],
@@ -441,22 +443,24 @@ pareach $genome_data, sub {
     close(SOURCES);
     close(TRUNC);
 
-    mkdir("$data_dir/nr") or die "cannot mkdir $data_dir/nr: $!";
-    my $rc = system("pf-build-nr", "$data_dir/sources", "$data_dir/nr/nr",
-		    "$data_dir/nr/peg.synonyms", "$data_dir/nr/nr-len.btree", "$data_dir/nr/figids");
-    if ($rc == 0)
-    {
-	$rc = system("pf-compute-nr-seqs", "--genome-dir", $opt->genome_dir,  $data_dir);
-	if ($rc != 0)
-	{
-	    warn "pf-compute-nr-seqs $data_dir failed: $rc\n";
-	}
-    }
-    else
-    {
-	warn "build_nr $data_dir failed: $rc\n";
-    }
-    
+    #
+    # Move this to the local family compute script so it can be run in parallel.
+    #
+    # mkdir("$data_dir/nr") or die "cannot mkdir $data_dir/nr: $!";
+    # my $rc = system("pf-build-nr", "$data_dir/sources", "$data_dir/nr/nr",
+    # 		    "$data_dir/nr/peg.synonyms", "$data_dir/nr/nr-len.btree", "$data_dir/nr/figids");
+    # if ($rc == 0)
+    # {
+    # 	$rc = system("pf-compute-nr-seqs", "--genome-dir", $opt->genome_dir,  $data_dir);
+    # 	if ($rc != 0)
+    # 	{
+    # 	    warn "pf-compute-nr-seqs $data_dir failed: $rc\n";
+    # 	}
+    # }
+    # else
+    # {
+    # 	warn "build_nr $data_dir failed: $rc\n";
+    # }
     
     if (@missed)
     {
@@ -526,16 +530,22 @@ sub get_genomes
 
     my %genus_data;
 
+    my @genera_query;
+    if ($opt->genus)
+    {
+	@genera_query = (fq => "$rank:(" . join(" OR ", map { "\"$_\"" }  @{$opt->genus}) . ")" );
+    }
+
     while (1)
     {
-	my $q = make_query(q => "taxon_rank:genus",
+	my $q = make_query(q => "taxon_rank:$rank",
 			   fl => "taxon_id,taxon_name,genetic_code,division",
 			   rows => $block,
 			   start => $start,
 			  );
 
 	my $url = $opt->solr_url . "/taxonomy/?$q";
-	
+
 	print STDERR "$url\n";
 	my $res = $ua->get($url,
 			   'Content-type' => 'application/solrquery+x-www-form-urlencoded',
@@ -587,12 +597,17 @@ sub get_genomes
     while (1)
     {
 	my $q = make_query(defined($gquery) ? (q => "public:* $gquery") : (q => "$rank:* public:1"),
-			   fl => "$rank,genome_id,genome_name,domain,kingdom,genome_quality,genome_status,genetic_code,taxon_lineage_ids,owner,public,contigs,species",
+			   fl => "$rank,genome_id,genome_name,domain,kingdom,genome_quality,genome_status,genetic_code,taxon_lineage_ids,owner,public,contigs,species,genome_quality_flags,cds",
+			   @genera_query,
+			   # ($opt->min_cds ? ("fq" => "cds:[" . $opt->min_cds . " TO *]") : ()),
 			   rows => $block,
 			   start => $start_idx,
 			   sort => "$rank asc",
 			  );
 
+	print "Q=$q\n";
+	$q = uri_escape($q, '()" :');
+	print "Q=$q\n";
 	my $url = $opt->solr_url . "/genome/?$q";
 	
 	print STDERR "$url\n";
@@ -623,7 +638,13 @@ sub get_genomes
 
 	for my $item (@$items)
 	{
-	    my($genus, $gid, $name, $kingdom, $quality, $status, $genetic_code, $lineage, $public, $owner) = @$item{$rank, qw(genome_id genome_name kingdom genome_quality genome_status genetic_code taxon_lineage_ids public owner)};
+	    my($genus, $gid, $name, $kingdom, $quality, $status, $genetic_code, $lineage, $public, $owner, $quality_flags, $cds) = @$item{$rank, qw(genome_id genome_name kingdom genome_quality genome_status genetic_code taxon_lineage_ids public owner genome_quality_flags cds)};
+
+	    if ($opt->min_cds && $cds < $opt->min_cds)
+	    {
+		warn "Skip $gid $name due to $cds < " . $opt->min_cds . "\n";
+		next;
+	    }
 
 	    next unless $public || $owner eq 'sars2_bvbrc@patricbrc.org';
 #	    if ($owner eq 'sars2_bvbrc@patricbrc.org')
@@ -631,14 +652,26 @@ sub get_genomes
 #		print Dumper($item);
 	    #	    }
 
+	    # print "$genus\t$gid\t$name\n";
+
 	    $all_genomes{$gid} = $item;
 
 	    next if $limit_genomes && !$limit_genomes->{$gid};
 
 	    if (($opt->check_quality && $quality ne 'Good') && $kingdom ne 'Viruses')
 	    {
-		# warn "Skipping $gid $name due to quality=$quality and kingdom=$kingdom\n";
-		next;
+		#
+		# If the only reason it's poor quality is that it is short, let it through.
+		#
+		if (ref($quality_flags) && @$quality_flags == 1 && $quality_flags->[0] eq 'Genome too short')
+		{
+		    # warn "allowing short genome\n";
+		}
+		else
+		{
+		    # warn "Skipping $gid $name due to quality=$quality and kingdom=$kingdom\n";
+		    next;
+		}
 	    }
 
 	    $gnames->{$gid} = $name;

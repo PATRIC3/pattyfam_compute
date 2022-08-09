@@ -51,6 +51,14 @@ my $dest_dir = shift;
 
 my $genus = basename($dir);
 
+my $genus_tax_id;
+if ($genus =~ /^(.*)-(\d+)$/)
+{
+    $genus = $1;
+    $genus_tax_id = $2;
+}
+    
+
 my $bootstrap = sub {
     my $p = P3AlignmentComputeToDisk->new($work_dir);
     return $p;
@@ -105,7 +113,17 @@ if ($opt->dna_md5_map)
 my @genomes = sort keys %fidfam;
 
 my $genetic_code = 11;
-my @res = $api->query("taxonomy", ["eq", "taxon_rank", "genus"], ["eq", "taxon_name", $genus], ["select", "taxon_name,taxon_id,genetic_code"]);
+my @qry;
+if ($genus_tax_id)
+{
+    @qry = (["eq", "taxon_id", $genus_tax_id]);
+
+}
+else
+{
+    @qry = (["eq", "taxon_rank", "genus"], ["eq", "taxon_name", $genus]);
+}
+my @res = $api->query("taxonomy", @qry, ["select", "taxon_name,taxon_id,genetic_code"]);
 print STDERR  "Genus tax data for '$genus': " . Dumper(\@res);
 if (@res)
 {

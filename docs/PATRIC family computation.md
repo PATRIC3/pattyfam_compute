@@ -12,7 +12,7 @@ to create sets of sequences corresponding to the reference sequence in the nonre
 sets.
 
 We typically create a family release directory (e.g /vol/patric3/fams/patric-fams-2021-0427) and place the genomic data in a subdirectory genus.data; that subdirectory is what is passed to `pf-construct-genus-data-for-genera`.
-
+  
 ```
 $ pf-construct-genus-data-for-genera
 pf-construct-genus-data-for-genera.pl [-bdghMmp] [long options...] data-dir

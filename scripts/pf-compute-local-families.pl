@@ -45,19 +45,6 @@ my $fam_dir = shift;
 
 my $tmpdir = $opt->tmpdir // "$fam_dir/tmp";
 
-my $refs_file = "$fam_dir/nr-refs";
-
-
-if (! -f "$fam_dir/nr/peg.synonyms")
-{
-    die "Missing $fam_dir/nr/peg.synonyms\n";
-}
-
-if (! -s "$fam_dir/nr/peg.synonyms")
-{
-    die "Zero length $fam_dir/nr/peg.synonyms\n";
-}
-
 if (! -d $tmpdir)
 {
     mkdir($tmpdir);
@@ -75,6 +62,28 @@ LOG->autoflush(1);
 
 my $overall_tstart = gettimeofday;
 print LOG "start overall_run $overall_tstart\n";
+
+#
+# Create NR if necessary.
+#
+if (! -s "$fam_dir/nr/peg.synonyms")
+{
+    -d "$fam_dir/nr" or mkdir("$fam_dir/nr") or die "cannot mkdir $fam_dir/nr: $!";
+    my $rc = system("pf-build-nr", "$fam_dir/sources", "$fam_dir/nr/nr",
+		    "$fam_dir/nr/peg.synonyms", "$fam_dir/nr/nr-len.btree", "$fam_dir/nr/figids");
+    if ($rc == 0)
+    {
+	$rc = system("pf-compute-nr-seqs", "--genome-dir", $opt->genome_dir,  $fam_dir);
+	if ($rc != 0)
+	{
+	    warn "pf-compute-nr-seqs $fam_dir failed: $rc\n";
+	}
+    }
+    else
+    {
+	warn "build_nr $fam_dir failed: $rc\n";
+    }
+}
 
 #
 # Start the stateful kmer server
@@ -376,6 +385,8 @@ print LOG "finish pf-compute-local-family-alignments.pl $tend $elap\n";
 my $overall_elap = $tend - $overall_tstart;
 
 print LOG "finish overall_run $tend $overall_elap\n";
+
+system("rm", "-rf", $work_dir);
 
 #
 # Wrapper around IPC::Run::run that does failure checking. Die on failure.

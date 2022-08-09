@@ -209,6 +209,7 @@ sub submit_jobs
 #SBATCH --nodes 1-1 --ntasks $process_count
 #SBATCH --array $start-$end
 #SBATCH --export ALL
+#SBATCH --constraint sim
 
 export TMPDIR=/disks/tmp/slurm-\$SLURM_ARRAY_JOB_ID-\$SLURM_ARRAY_TASK_ID
 mkdir -p \$TMPDIR

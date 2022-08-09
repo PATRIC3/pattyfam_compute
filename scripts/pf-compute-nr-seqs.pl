@@ -27,6 +27,7 @@ use Getopt::Long::Descriptive;
 use Data::Dumper;
 
 my($opt, $usage) = describe_options("%c %o genus-data-dir",
+				    ["skip-dna", "Skip computing DNA NR"],
 				    ["genome-dir=s", "Directory holding PATRIC genome data", { default => "/vol/patric3/downloads/genomes" }],
 				    ["help|h" => "Show this help message."]);
 print($usage->text), exit 1 if $opt->help;
@@ -165,31 +166,34 @@ closedir(DH);
 # Read and copy the NR dna sequences from the genome directory.
 #
 
-while (my($genome, $ids) = each %genomes)
+if (!$opt->skip_dna)
 {
-    next if -s "$dna_dir/$genome";
-    
-    my $dna = $opt->genome_dir . "/$genome/$genome.PATRIC.ffn";
-    open(O, ">", "$dna_dir/$genome") or die "cannot write $dna_dir/$genome: $!";
-
-    if (open(G, "<", $dna))
+    while (my($genome, $ids) = each %genomes)
     {
-	while (my($idx, $def, $seq) = read_next_fasta_seq(\*G))
+	next if -s "$dna_dir/$genome";
+	
+	my $dna = $opt->genome_dir . "/$genome/$genome.PATRIC.ffn";
+	open(O, ">", "$dna_dir/$genome") or die "cannot write $dna_dir/$genome: $!";
+	
+	if (open(G, "<", $dna))
 	{
-	    my($id) = $idx =~ (/(fig\|\d+\.\d+\.[^.]+\.\d+)/);
-	    
-	    if (delete $ids->{$id})
+	    while (my($idx, $def, $seq) = read_next_fasta_seq(\*G))
 	    {
-		write_fasta(\*O, [$id, $def, $seq]);
+		my($id) = $idx =~ (/(fig\|\d+\.\d+\.[^.]+\.\d+)/);
+		
+		if (delete $ids->{$id})
+		{
+		    write_fasta(\*O, [$id, $def, $seq]);
+		}
 	    }
 	}
+	else
+	{
+	    warn "Cannot open $dna: $!";
+	    next;
+	}
+	
+	close(O);
+	close(G);
     }
-    else
-    {
-	warn "Cannot open $dna: $!";
-	next;
-    }
-
-    close(O);
-    close(G);
 }
