@@ -75,8 +75,82 @@ The method for selecting pegs is also a parameter.
 Given the set of fasta files, we use the kmer distance clustering algorithm to
 compute suggested family merges.
 
+Creates the peg.map file which contains columns
 
-== NOTES
+  rep_id, genus, family, func-index, function, genome name
+
+Detailed program flow
+
+ * Create list @dirs of pairs [genus-dir, total-sequence-size]
+ * Annotate the work list with per-worker output directories for chunked fasta data
+ * LPT-schedule in parallel this:
+   * For each genus, collect family fasta
+ * Merge the chunked data into larger files
+ * Create a work list of an item for each function
+ * LPT-schedule based on size of fasta:
+    * For each function:
+      * Start a kser
+      * Load fasta data using the /add route
+      * Dump the matrix using /matrix
+
+##### Collect family 
+
+  * Load sequences from genus-dir/nr-seqs into %seq
+  * Load family definitions into %fam_info
+  * For each of the families we are processing (we may keep only familes for a list of desired roles), emit fasta:
+    * Pick a set of representatives from the local family
+    * For each rep, write an entry into the peg map, per-family fasta dir, and all-peg fasta dir
+
+#### get_merged_families_2
+
+Clip overly large groups to a minimum kmer score
+
+Run mcl on the groups
+
+#### get_merged_families_3
+
+Load the local family data from the genus directories, including lists of peg ids that are in the families.
+
+Load the peg.map (map from rep id to local family info)
+
+
+## NOTES
 
 Add a p3x-compute-kmer-distance program that encapsulates the start-kser / load / pull matrix functionality
 
+## Alternative decomposition of the problem
+
+The early versions of this pipeline were targeted to run in parallel on a single node. As the size of the collection has grown this has become insufficient, especially as we wish to run the entire process more often.
+
+There are two distinct phases of the problem. In the first, we are operating on a per-genus basis to compute local families within each genus. After that is complete, we switch to computing on a per-function basis to compute the candidates for the merged global families.
+
+We arrange the end of the per-group computation to initialize the per-family computation with the data that is already local. In our shared directory structure we have the following layout:
+ 
+ families/genus.data/GroupName-Taxid              All data for the group
+                                    /peg.map      Table mapping rep sequence to metadata
+          function.data/Function-id               All data for the given function ID          function.data/Function-id/aa-fasta      Fasta data of family reps for the function
+
+
+As a result we can define a refactored pipeline via scripts that perform the following operations:
+
+ * Create an initial directory containing a subdirectory for each genome group to be computed on. These correspond to genera in the bacteria and archaea, and probably families in viruses.
+ * For each genome group, we have scripts that perform the following operations:
+   * Download sequence data (AA & DNA), look up gene names, scan for contig sizes and mark potentially truncated genes. (currently in pf-construct-genus-data-for-genera)
+   * Compute NRs for group (AA & DNA)
+   * Compute local families and alignments. (pf-compute-local-families - this is already in the proper form)
+   * Write the peg.map for the reps of the group
+   * write the function.data/Function-id/aa-fasta/Groupname-Taxid file with the sequence data of the reps
+ * 
+
+
+== The pipeline
+
+```
+pf-initialize-data -g Buchnera -g 'Candidatus Carsonella' -g Candidatus\ Riesia --check-quality /vol/bvbrc-families/fams/test-02/genus.data
+
+pf-load-group-data /vol/bvbrc-families/fams/test-02/genus.data/Candidatus\ Carsonella-114185
+
+pf-load-group-data /vol/bvbrc-families/fams/test-02/genus.data/Buchnera-32199
+
+
+```

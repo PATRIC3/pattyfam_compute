@@ -50,6 +50,16 @@ if (! -d $tmpdir)
     mkdir($tmpdir);
 }
 
+
+#
+# Use a system-local temp space for processing the large kmer data sets.
+#
+my $work_dir = File::Spec->tmpdir() . "/work." . basename($fam_dir);
+
+-d $work_dir and die "Work directory $work_dir already exists\n";
+make_path($work_dir);
+
+
 if ($opt->logfile)
 {
     open(LOG, ">>", $opt->logfile) or die "Cannot open " . $opt->logfile . " for append: $!";
@@ -192,12 +202,6 @@ my $elap = $tend - $tstart;
 print LOG "finish pf-annotate-seqs $tend $elap\n";
 
 $rc == 0 or die "annotation failed with $rc: @anno_cmd\n";
-
-#
-# Use a system-local temp space for processing the large kmer data sets.
-#
-my $work_dir = File::Spec->tmpdir() . "/work." . basename($fam_dir); 
-make_path($work_dir);
 
 #
 # Compute kmer distances.
