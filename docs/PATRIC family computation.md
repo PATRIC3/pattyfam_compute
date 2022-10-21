@@ -128,12 +128,13 @@ We arrange the end of the per-group computation to initialize the per-family com
  
  families/genus.data/GroupName-Taxid              All data for the group
                                     /peg.map      Table mapping rep sequence to metadata
-          function.data/Function-id               All data for the given function ID          function.data/Function-id/aa-fasta      Fasta data of family reps for the function
+          function.data/Function-id               All data for the given function ID          function.data/Function-id/aa-fasta                                Fasta data of family reps for the function
 
 
 As a result we can define a refactored pipeline via scripts that perform the following operations:
 
  * Create an initial directory containing a subdirectory for each genome group to be computed on. These correspond to genera in the bacteria and archaea, and probably families in viruses.
+ * For genera that have more genomes than a specified limit, we calculate the ANI between the reference and representative genomes and the rest of the genomes in the genus. We keep only the genomes whose best hit to one of the ref/rep genomes is less than a threshold (97% currently testing).
  * For each genome group, we have scripts that perform the following operations:
    * Download sequence data (AA & DNA), look up gene names, scan for contig sizes and mark potentially truncated genes. (currently in pf-construct-genus-data-for-genera)
    * Compute NRs for group (AA & DNA)
@@ -143,14 +144,55 @@ As a result we can define a refactored pipeline via scripts that perform the fol
  * 
 
 
+peg.map contents
+
+   * rep-id
+   * genus
+   * local fam-id
+   * func-index
+   * function
+   * genome name
+
+olson@holly:~/P3/dev-slurm/dev_container/modules/pattyfam_compute$ head /vol/patric3/fams/2018-0531/merge1//peg.map
+fig|624.1127.peg.407    Shigella        1       16026   IS1 protein InsB        Shigella sonnei strain sh1380
+fig|216599.7.peg.3596   Shigella        1       16026   IS1 protein InsB        Shigella sonnei 53G
+fig|216599.7.peg.3341   Shigella        1       16026   IS1 protein InsB        Shigella sonnei 53G
+fig|624.1179.peg.4844   Shigella        1       16026   IS1 protein InsB        Shigella sonnei strain 3626STDY6095479
+fig|624.915.peg.2543    Shigella        1       16026   IS1 protein InsB        Shigella sonnei strain 3626STDY6095484
+fig|624.927.peg.945     Shigella        1       16026   IS1 protein InsB        Shigella sonnei strain 3626STDY6095497
+fig|624.73.peg.4892     Shigella        1       16026   IS1 protein InsB        Shigella sonnei strain 786_SSON
+fig|624.73.peg.5168     Shigella        1       16026   IS1 protein InsB        Shigella sonnei strain 786_SSON
+fig|1617964.8.peg.5366  Shigella        1       16026   IS1 protein InsB        Shigella flexneri 4c
+fig|624.1161.peg.2846   Shigella        1       16026   IS1 protein InsB        Shigella sonnei strain sh1445
+
+
+
 == The pipeline
 
 ```
 pf-initialize-data -g Buchnera -g 'Candidatus Carsonella' -g Candidatus\ Riesia --check-quality /vol/bvbrc-families/fams/test-02/genus.data
 
+for each genus dir of large enough size:
+pf-compute-genus-ani genus-dir
+
+
 pf-load-group-data /vol/bvbrc-families/fams/test-02/genus.data/Candidatus\ Carsonella-114185
 
 pf-load-group-data /vol/bvbrc-families/fams/test-02/genus.data/Buchnera-32199
 
-
+pf-compute-local-families --kser ~/P3/close_kmers/kser  --parallel 4 /vol/bvbrc-families/fams/test-02/kmers /vol/bvbrc-families/fams/test-02/genus.data/Buchnera-32199
 ```
+
+== NOTES
+
+=== Oct 18
+
+Need to remove truncated pegs in the cached genome loading case
+
+Need to leave truncated pegs in place when genomes are marked complete
+
+== Name propagation
+
+propagate_names.cc writes entries of the following forms
+
+ * NewFam NOW OldFam
