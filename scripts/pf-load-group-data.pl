@@ -28,23 +28,32 @@ use IPC::Run 'run';
 use gjoseqlib;
 use DB_File;
 use P3AuthToken;
+use PFCache qw(compute_cache_path);
+use File::Copy qw(copy);
+use IO::File;
+use LPTScheduler;
 
 my $token = P3AuthToken->new;
 my @auth = (Authorization => $token->token);
 
-my($opt, $usage) = describe_options("%c %o data-dir",
+my($opt, $usage) = describe_options("%c %o data-dir cache-dir",
+				    ["data-dir is the genus directory we are loading with data"],
+				    ["cache-dir is the cache of API-generated data used as a fallback, created by pf-load-genomes-to-cache"],
+				    [],
 				    ["genome-dir=s", "Directory holding PATRIC genome data", { default => "/vol/patric3/downloads/genomes" }],
 				    ["solr-url|d=s", "Solr API url", { default => 'https://www.patricbrc.org/api' }],
-				    ["cache-dir=s", "Directory holding API-loaded sequence data cache"],
+				    ["parallel|j=i", "Run tasks in parallel", { default => 1 }],
 				    ["help|h", "Show this help message"],
 				    );
 
 print($usage->text), exit if $opt->help;
-die($usage->text) if @ARGV != 1;
+$usage->die() if @ARGV != 2;
 
 my $group_dir = shift;
+my $cache_base_dir = shift;
 
 -d $group_dir or die "Data directory $group_dir does not exist\n";
+-d $cache_base_dir or die "Cache directory $cache_base_dir does not exist\n";
 
 my $json = JSON::XS->new->pretty(1);
 
@@ -64,163 +73,91 @@ chomp @genome_ids;
 print STDERR "Loading " . scalar(@genome_ids) . " genomes for $group_dir\n";
 
 my $seqs_dir = "$group_dir/Seqs";
-my $na_seqs_dir = "$group_dir/nr-seqs-dna";
+my $na_seqs_dir = "$group_dir/NASeqs";
 
 open(SOURCES, ">", "$group_dir/sources") or die "Cannot write $group_dir/sources: $!";
 open(GENE_NAMES, ">", "$group_dir/gene.names") or die "Cannot write $group_dir/gene_names: $!";
 open(TRUNC, ">", "$group_dir/truncated.genes") or die "Cannot write $group_dir/truncated.genes: $!";
 open(BAD_SEQS, ">", "$group_dir/bad.seqs") or die "Cannot write $group_dir/bad.seqs: $!";
 
+#
+# Set up for parallel run. We need to accumulate the four files' data in temps, and then
+# write the full file when done.
+# The global list will contain four filehandles, one for each of the files above.
+#
+
+my $tmpdir = "$group_dir/tmp.$$";
+make_path($tmpdir);
+
+my $bootstrap = sub {
+    my $src_fh = IO::File->new("$tmpdir/src.$$", "w");
+    my $name_fh = IO::File->new("$tmpdir/name.$$", "w");
+    my $trunc_fh = IO::File->new("$tmpdir/trunc.$$", "w");
+    my $bad_fh = IO::File->new("$tmpdir/bad.$$", "w");
+    my $seq_len_fh = IO::File->new("$tmpdir/seq_len.$$", "w");
+    return [$src_fh, $name_fh, $trunc_fh, $bad_fh, $seq_len_fh];
+};
+
+my $sched = LPTScheduler->new($opt->parallel);
+
+$sched->add_work($_, 1) foreach @genome_ids;
+$sched->run($bootstrap, sub {
+    my($fh_list, $gid) = @_;
+
+    process_genome($gid, $fh_list);
+});
+
+#
+# Now collect our output and write.
+#
+
 my %seq_len;
-my $tied = tie %seq_len, 'DB_File', "$group_dir/seq_len.db", O_RDWR | O_CREAT, 0664, $DB_BTREE;
-$tied or die "Cannot create $group_dir/seq_len.db: $!";
+my $seq_len_db = "$group_dir/seq_len.db";
+unlink($seq_len_db);
+my $tied = tie %seq_len, 'DB_File', $seq_len_db, O_RDWR | O_CREAT, 0664, $DB_BTREE;
+$tied or die "Cannot create $seq_len_db: $!";
 
-my %contig_len;
-tie %contig_len, 'DB_File', "$group_dir/contig_len.btree", O_RDWR | O_CREAT, 0664, $DB_BTREE
-    or die "Cannot tie $group_dir/contig_len.btree:$ !";
-
-my @missed;
-for my $gid (@genome_ids)
+opendir(D, $tmpdir) or die "Cannot opendir $tmpdir: $!";
+while (my $f = readdir(D))
 {
-    my $prots = $opt->genome_dir . "/$gid/$gid.PATRIC.faa";
-    if (-s $prots && open(P, "<", $prots))
+    if ($f =~ /^src/)
     {
-	open(SEQS, ">", "$seqs_dir/$gid") or die "Cannot write $seqs_dir/$gid: $!";
-	my $skip;
-	while (my($id, $def, $seq) = read_next_fasta_seq(\*P))
-	{
-	    if ($id =~ /^(fig\|[^|]+)/)
-	    {
-		if ($seq =~ /X{10}/)
-		{
-		    print BAD_SEQS "Skipping bad sequence $id from $prots at $.\n";
-		}
-		    else
-		    {
-			print_alignment_as_fasta(\*SEQS, [$1, '', $seq]);
-			$seq_len{$1} = length($seq);
-		    }
-	    }
-	    else
-	    {
-		warn "Cannot parse $id from $prots at $.\n";
-	    }
-	}
-	close(SEQS);
-	close(P);
-	
-	#
-	# Read the features.tab file to look up the gene names for possible
-	# hypothetical family naming.
-	#
-	# We also scan for contig sizes so we can tag truncated genes. 
-	#
-	my $tab = $opt->genome_dir . "/$gid/$gid.PATRIC.features.tab";
-	if (open(TAB, "<", $tab))
-	{
-	    my $key = <TAB>;
-	    chomp $key;
-	    my @hdrs = split(/\t/, $key);
-	    my $gene_idx = first_index { $_ eq 'gene' } @hdrs;
-	    my $id_idx = first_index { $_ eq 'patric_id' } @hdrs;
-	    my $ftype_idx = first_index { $_ eq 'feature_type' } @hdrs;
-	    my $acc_idx = first_index { $_ eq 'accession' } @hdrs;
-	    my $start_idx = first_index { $_ eq 'start' } @hdrs;
-	    my $end_idx = first_index { $_ eq 'end' } @hdrs;
-	    my $len_idx = first_index { $_ eq 'na_length' } @hdrs;
-	    
-	    if ($gene_idx < 0)
-	    {
-		warn "Could not find gene column in $tab. Headers are '$key'\n";
-	    }
-	    #
-	    # Scan once for contig lengths and gene nam
-	    while (<TAB>)
-	    {
-		chomp;
-		my @vals = split(/\t/);
-		my $id = $vals[$id_idx];
-		if (defined($gene_idx))
-		{
-		    my $gene = $vals[$gene_idx];
-		    print GENE_NAMES "$id\t$gene\n" if $gene;
-		}
-		if ($vals[$ftype_idx] eq 'source')
-		{
-		    $contig_len{$vals[$acc_idx]} = $vals[$len_idx];
-		}
-	    }
-	    seek(TAB, 0, 0);
-	    my $tried;
-	    while (<TAB>)
-	    {
-		chomp;
-		my @vals = split(/\t/);
-		my($id, $type, $start, $end, $acc) = @vals[$id_idx, $ftype_idx, $start_idx, $end_idx, $acc_idx];
-		
-		next unless $type eq 'CDS';
-		
-		my $len = $contig_len{$acc};
-		
-		if (!$len && !$tried)
-		{
-		    $tried = 1;
-		    #
-		    # Length missing means we need to read the contigs.
-		    #
-		    my $contigs = $opt->genome_dir . "/$gid/$gid.fna";
-
-		    #
-		    # Try the contigs cache dir created during ANI run.
-		    #
-		    if (! -s $contigs)
-		    {
-			$contigs = "$group_dir/contigs/$gid.fna";
-		    }
-		    if (open(C, "<", $contigs) )
-		    {
-			while (my($id, $def, $seq) = read_next_fasta_seq(\*C))
-			{
-			    $contig_len{$id} = length($seq);
-			}
-			close(C);
-		    }
-		    else
-		    {
-			warn "Cannot open $contigs: $!";
-		    }
-		    $len = $contig_len{$acc};
-		    next unless $len;
-		}
-		
-		if ($start < 10 || $end < 10 || $start > $len - 10 || $end > $len - 10)
-		{
-		    print TRUNC join("\t", $id, $start, $end, $len), "\n";
-		}
-	    }
-	    
-	    close(TAB);
-	}
-	else
-	{
-	    warn "Could not open $tab: $!";
-	}
+	copy("$tmpdir/$f", \*SOURCES);
     }
-    else
+    elsif ($f =~ /^name/)
     {
-	load_genome_from_api($gid);
+	copy("$tmpdir/$f", \*GENE_NAMES);
     }
-    $tied->sync();
-    print SOURCES "$seqs_dir/$gid\n";
+    elsif ($f =~ /^trunc/)
+    {
+	copy("$tmpdir/$f", \*TRUNC);
+    }
+    elsif ($f =~ /^bad/)
+    {
+	copy("$tmpdir/$f", \*BAD_SEQS);
+    }
+    elsif ($f =~ /^seq_len/)
+    {
+	open(SL, "<", "$tmpdir/$f") or die "Cannot open $tmpdir/$f: $!";
+	while (<SL>)
+	{
+	    chomp;
+	    my($id, $len) = split(/\t/);
+	    $seq_len{$id} = $len;
+	}
+	close(SL);
+	$tied->sync();
+    }
+    unlink("$tmpdir/$f") if -f "$tmpdir/$f";
 }
-
+rmdir($tmpdir) or die "Error removing $tmpdir: $!";
 untie %seq_len;
-untie %contig_len;
 undef $tied;
-close(GFILE);
-close(GNAME);
-close(SOURCES);
-close(TRUNC);
+	
+close(BAD_SEQS) or die "Error closing: $!";
+close(GENE_NAMES) or die "Error closing: $!";
+close(SOURCES) or die "Error closing: $!";
+close(TRUNC) or die "Error closing: $!";
 
 mkdir("$group_dir/nr") or die "cannot mkdir $group_dir/nr: $!";
 my $rc = system("pf-build-nr", "$group_dir/sources", "$group_dir/nr/nr",
@@ -238,251 +175,190 @@ else
     warn "build_nr $group_dir failed: $rc\n";
 }
 
-if (@missed)
+sub process_genome
 {
-    print STDERR "Missed the following genomes:\n";
-    print STDERR "  $_\n" foreach @missed;
+    my($gid, $fh_list) = @_;
+    my $precomp_dir = $opt->genome_dir . "/$gid";
+    my $prots = "$precomp_dir/$gid.PATRIC.faa";
+
+    my($src_fh, $name_fh, $trunc_fh, $bad_fh, $seq_len_fh) = @$fh_list;
+	
+    if (-s $prots)
+    {
+	load_genome_from_precomputed_data($gid, $precomp_dir, $name_fh, $trunc_fh, $bad_fh, $seq_len_fh);
+    }
+    else
+    {
+	load_genome_from_cache($gid, $cache_base_dir, $name_fh, $trunc_fh, $bad_fh, $seq_len_fh);
+    }
+    print $src_fh "$seqs_dir/$gid\n";
 }
 
-sub make_query
+sub load_genome_from_precomputed_data
 {
-    my(@list) = @_;
+    my($gid, $precomp_dir, $name_fh, $trunc_fh, $bad_fh, $seq_len_fh) = @_;
+
+    my $prots = "$precomp_dir/$gid.PATRIC.faa";
+    open(P, "<", $prots) or die "Cannot read $precomp_dir/$gid.PATRIC.faa: $!";
+    open(SEQS, ">", "$seqs_dir/$gid") or die "Cannot write $seqs_dir/$gid: $!";
+
     
-    my @q;
-    while (@list)
-    {
-	my($k, $v) = splice(@list, 0, 2);
-	push(@q, "$k=$v");
-    }
-    return join("&", @q);
-}
-
-sub load_genome_from_api
-{
-    my($gid) = @_;
-
-    my($dna_seq, $aa_seq, $bad_seqs, $trunc, $gene_names, $cache_dir);
-
-    if ($opt->cache_dir)
-    {
-	$cache_dir = $opt->cache_dir . "/$gid";
-	make_path($cache_dir);
-	
-	$dna_seq = "$cache_dir/dna.fa";
-	$aa_seq = "$cache_dir/aa.fa";
-	$bad_seqs = "$cache_dir/bad_seqs.txt";
-	$trunc = "$cache_dir/trunc_seqs.txt";
-	$gene_names = "$cache_dir/gene_names.txt";
-
-	if (-s $dna_seq && -s $aa_seq)
-	{
-	    copy($aa_seq, "$seqs_dir/$gid");
-	    copy($dna_seq, "$na_seqs_dir/$gid");
-	    copy($bad_seqs, \*BAD_SEQS);
-	    copy($gene_names, \*GENE_NAMES);
-	    copy($trunc, \*TRUNC);
-	    return;
-	}
-    }
     #
-    # Query for contig lengths.
+    # Read the features.tab file to look up the gene names for possible
+    # hypothetical family naming.
     #
-    my %seq_len;
-    
-    my $ua = LWP::UserAgent->new;
-    my $block = 25000;
-    my $start_idx = 0;
-    while (1)
+    # We also scan for contig sizes so we can tag truncated genes. 
+    #
+    my $tab = "$precomp_dir/$gid.PATRIC.features.tab";
+    my %contig_len;
+    my %truncated;
+
+    if (open(TAB, "<", $tab))
     {
-	my $q = make_query(q => "genome_id:$gid",
-			   fl => "sequence_type,length,accession",
-			   rows => $block,
-			   start => $start_idx,
-			  );
+	my $key = <TAB>;
+	chomp $key;
+	my @hdrs = split(/\t/, $key);
+	my $gene_idx = first_index { $_ eq 'gene' } @hdrs;
+	my $id_idx = first_index { $_ eq 'patric_id' } @hdrs;
+	my $ftype_idx = first_index { $_ eq 'feature_type' } @hdrs;
+	my $acc_idx = first_index { $_ eq 'accession' } @hdrs;
+	my $start_idx = first_index { $_ eq 'start' } @hdrs;
+	my $end_idx = first_index { $_ eq 'end' } @hdrs;
+	my $len_idx = first_index { $_ eq 'na_length' } @hdrs;
 	
-	my $url = $opt->solr_url . "/genome_sequence/?$q";
-	
-	# print STDERR "$url\n";
-	my $res = $ua->get($url,
-			   'Content-type' => 'application/solrquery+x-www-form-urlencoded',
-			   'Accept' => 'application/solr+json',
-			   @auth
-			  );
-	if (!$res->is_success)
+	if ($gene_idx < 0)
 	{
-	    die "Failed: $url " . $res->status_line;
+	    warn "Could not find gene column in $tab. Headers are '$key'\n";
 	}
-	
-	my $range = $res->header('content-range');
-	# print "Range: $range\n";
-	my($tstart, $tstop, $tlast) = $range =~ m,(\d+)-(\d+)/(\d+),;
-	
-	my $r = $res->content;
-	my $data = decode_json($r);
-	
-	my $items = $data->{response}->{docs};
-	# print Dumper($items);
-	for my $item (@$items)
+	#
+	# Scan once for contig lengths and gene nam
+	while (<TAB>)
 	{
-	    $seq_len{$item->{accession}} = $item->{length};
-	}
-	if ($tstop < $tlast)
-	{
-	    $start_idx = $tstop;
-	}
-	else
-	{
-	    last;
-	}
-    }
-    #
-    # Now we can query the features.
-    #
-    $start_idx = 0;
-    my %aa_seq_id;
-    my %na_seq_id;
-    print STDERR "Load features from API for $gid\n";
-    while (1)
-    {
-	my $q = make_query(q => "genome_id:$gid feature_type:CDS annotation:PATRIC",
-			   fl => "patric_id,start,end,accession,gene,na_length,aa_sequence_md5,na_sequence_md5",
-			   rows => $block,
-			   start => $start_idx,
-			  );
-	
-	my $url = $opt->solr_url . "/genome_feature/?$q";
-	
-	# print STDERR "$url\n";
-	my $res = $ua->get($url,
-			   'Content-type' => 'application/solrquery+x-www-form-urlencoded',
-			   'Accept' => 'application/solr+json',
-			   @auth
-			  );
-	if (!$res->is_success)
-	{
-	    die "Failed: " . $res->status_line;
-	}
-	
-	my $range = $res->header('content-range');
-	# print "Range: $range\n";
-	my($tstart, $tstop, $tlast) = $range =~ m,(\d+)-(\d+)/(\d+),;
-	
-	my $r = $res->content;
-	my $data = decode_json($r);
-	
-	my $items = $data->{response}->{docs};
-	
-	for my $item (@$items)
-	{
-	    my($id, $start, $end, $acc, $gene, $aa_md5, $na_md5) = @$item{qw(patric_id start end accession gene aa_sequence_md5 na_sequence_md5)};
-	    # $id =~ s/\.CDS\./.peg./;
-	    # print "id=$id start=$start end=$end ac=$acc gene=$gene $aa_md5 $na_md5\n";
-	    $aa_seq_id{$aa_md5} = $id;
-	    $na_seq_id{$na_md5} = $id;
-	    
-	    my $len = $seq_len{$acc};
-	    
-	    print GENE_NAMES "$id\t$gene\n" if $gene;
-	    
-	    die Dumper($item) unless defined($len);
-	    if ($start < 10 || $end < 10 || $start > $len - 10 || $end > $len - 10)
+	    chomp;
+	    my @vals = split(/\t/);
+	    my $id = $vals[$id_idx];
+	    if (defined($gene_idx))
 	    {
-		print TRUNC join("\t", $id, $start, $end, $len), "\n";
+		my $gene = $vals[$gene_idx];
+		print $name_fh "$id\t$gene\n" if $gene;
+	    }
+	    if ($vals[$ftype_idx] eq 'source')
+	    {
+		$contig_len{$vals[$acc_idx]} = $vals[$len_idx];
 	    }
 	}
-	
-	if ($tstop < $tlast)
+	seek(TAB, 0, 0);
+	my $tried;
+	while (<TAB>)
 	{
-	    $start_idx = $tstop;
-	}
-	else
-	{
-	    last;
-	}
-    }
-    #
-    # And finally the sequences, in batches.
-    #
-    print STDERR "Load sequence data for $gid from API\n";
-    my $batch_size = 2000;
-    my @seqs = (keys %na_seq_id, keys %aa_seq_id);
-    
-    open(AA_SEQS, ">", "$seqs_dir/$gid") or die "Cannot write $seqs_dir/$gid: $!";
-    open(NA_SEQS, ">", "$na_seqs_dir/$gid") or die "Cannot write $na_seqs_dir/$gid: $!";
-    while (@seqs)
-    {
-	my @batch = splice(@seqs, 0, $batch_size);
-	
-	$start_idx = 0;
-	while (1)
-	{
-	    my @q = (q => "md5:(@batch)",
-		     fl => "md5,sequence",
-		     rows => $block,
-		     start => $start_idx,
-		    );
+	    chomp;
+	    my @vals = split(/\t/);
+	    my($id, $type, $start, $end, $acc) = @vals[$id_idx, $ftype_idx, $start_idx, $end_idx, $acc_idx];
 	    
-	    my $url = $opt->solr_url . "/feature_sequence";
+	    next unless $type eq 'CDS';
 	    
-	    my $start = time;
-	    my $last_print;
-	    my $res;
-	    while (1)
+	    my $len = $contig_len{$acc};
+	    
+	    if (!$len && !$tried)
 	    {
-		# print STDERR "$url\n";
-		$res = $ua->post($url,
-				 'Content-type' => 'application/solrquery+x-www-form-urlencoded',
-				 'Accept' => 'application/solr+json',
-				 @auth,
-				 Content => \@q,
-				);
-		last if $res->is_success;
-		sleep(10);
-		if (!$last_print || time - $last_print > 120)
+		$tried = 1;
+		#
+		# Length missing means we need to read the contigs.
+		#
+		my $contigs = $opt->genome_dir . "/$gid/$gid.fna";
+		
+		#
+		# Try the contigs cache dir created during ANI run.
+		#
+		if (! -s $contigs)
 		{
-		    print STDERR "Still retrying request $url\n";
-		    $last_print = time;
+		    $contigs = "$group_dir/contigs/$gid.fna";
 		}
-	    }
-	    
-	    my $range = $res->header('content-range');
-	    # print "Range: $range\n";
-	    my($tstart, $tstop, $tlast) = $range =~ m,(\d+)-(\d+)/(\d+),;
-	    
-	    my $r = $res->content;
-	    my $data = decode_json($r);
-	    
-	    my $items = $data->{response}->{docs};
-	    
-	    for my $item (@$items)
-	    {
-		my($md5, $seq) = @$item{qw(md5 sequence)};
-		if (my $id = $aa_seq_id{$md5})
+		if (open(C, "<", $contigs) )
 		{
-		    if ($seq =~ /X{10}/)
+		    while (my($id, $def, $seq) = read_next_fasta_seq(\*C))
 		    {
-			print BAD_SEQS "Skipping bad sequence $id\n";
+			$contig_len{$id} = length($seq);
 		    }
-		    else
-		    {
-			print_alignment_as_fasta(\*AA_SEQS, [$id, '', $seq]);
-		    }
+		    close(C);
 		}
 		else
 		{
-		    print_alignment_as_fasta(\*NA_SEQS, [$na_seq_id{$md5}, '', $seq]);
+		    warn "Cannot open $contigs: $!";
 		}
+		$len = $contig_len{$acc};
+		next unless $len;
 	    }
 	    
-	    if ($tstop < $tlast)
+	    if ($start < 10 || $end < 10 || $start > $len - 10 || $end > $len - 10)
 	    {
-		$start_idx = $tstop;
+		print $trunc_fh join("\t", $id, $start, $end, $len), "\n";
+		$truncated{$id} = 1;
+	    }
+	}
+	
+	close(TAB);
+
+	while (my($id, $def, $seq) = read_next_fasta_seq(\*P))
+	{
+	    my $fid;
+	    if (($fid) = $id =~ /^(fig\|[^|]+)/)
+	    {
+		if ($seq =~ /X{10}/)
+		{
+		    print $bad_fh "Skipping bad sequence $id from $prots at $.\n";
+		}
+		elsif ($truncated{$fid})
+		{
+		    print $bad_fh "Skipping truncated $id froM $prots at $.\n";
+		}
+		else
+		{
+		    print_alignment_as_fasta(\*SEQS, [$fid, '', $seq]);
+		    print $seq_len_fh join("\t", $fid, length($seq)) . "\n";
+		}
 	    }
 	    else
 	    {
-		last;
+		warn "Cannot parse $id from $prots at $.\n";
 	    }
 	}
+	close(SEQS);
+	close(P);
     }
-    close(SEQS);
+    else
+    {
+	warn "Could not open $tab: $!";
+    }
+}    
+
+sub load_genome_from_cache
+{
+    my($gid, $cache_base_dir, $name_fh, $trunc_fh, $bad_fh, $seq_len_fh) = @_;
+
+    my $cache_dir = compute_cache_path($cache_base_dir, $gid);
+
+    -d $cache_dir or die "Cache $cache_dir not available for $gid";
+
+    my $dna_seq = "$cache_dir/dna.fa";
+    my $aa_seq = "$cache_dir/aa.fa";
+    my $bad_seqs = "$cache_dir/bad_seqs.txt";
+    my $trunc = "$cache_dir/trunc_seqs.txt";
+    my $gene_names = "$cache_dir/gene_names.txt";
+    my $seq_lens = "$cache_dir/seq_lens.txt";
+    
+    #
+    # Copy gene name and truncated data.
+    #
+    copy($gene_names, $name_fh);
+    copy($trunc, $trunc_fh);
+    copy($bad_seqs, $bad_fh);
+    copy($seq_lens, $seq_len_fh);
+
+    #
+    # Copy sequence data.
+    #
+
+    copy($aa_seq, "$seqs_dir/$gid");
+    copy($dna_seq, "$na_seqs_dir/$gid");
 }

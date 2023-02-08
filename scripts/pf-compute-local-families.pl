@@ -35,7 +35,7 @@ my($opt, $usage) = describe_options("%c %o kmer-dir genus-data-dir",
 				    ["parallel=i" => "Parallel threads", { default => 1 }],
 				    ["tmpdir=s" => "Temp dir"],
 				    ["genome-dir=s", "Directory holding PATRIC genome data", { default => "/vol/patric3/downloads/genomes" }],
-				    ["kser=s" => "Path to kser executable", { default => "/scratch/olson/close_kmers/kser" }],
+				    ["kser=s" => "Path to kser executable", { default => "/home/olson/P3/close_kmers/kser" }],
 				    ["help|h" => "Show this help message."]);
 print($usage->text), exit 0 if $opt->help;
 die($usage->text) if @ARGV != 2;
@@ -380,7 +380,7 @@ print LOG "start pf-compute-local-family-alignments.pl $tstart\n";
 run(["pf-compute-local-family-alignments",
      "--genome-dir", $opt->genome_dir,
      "--parallel", $opt->parallel,
-     $fam_dir, $align_work_dir, $fam_dir]);
+     $fam_dir, $kmer_dir, $align_work_dir, $fam_dir]);
 
 my $tend = gettimeofday;
 my $elap = $tend - $tstart;

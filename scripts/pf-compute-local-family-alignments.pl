@@ -17,6 +17,7 @@ Given a genus data directory,  compute the set of multiple sequence alignments f
 =cut
 
 use P3DataAPI;
+use URI::Escape;
 use Proc::ParallelLoop;
 use File::Copy 'copy';
 use IPC::Run 'run';
@@ -31,25 +32,33 @@ use LPTScheduler;
 use P3AlignmentComputeToDisk;
 use DB_File;
 use File::Slurp;
+use File::Path qw(make_path);
+use PFLocalFamilies;
+use Cwd qw(abs_path);
 
-my($opt, $usage) = describe_options("%c %o genus-dir work-dir dest-dir",
+my($opt, $usage) = describe_options("%c %o genus-dir kmer-dir work-dir dest-dir",
 				    ["dna-md5-map=s" => "Save DNA md5 mapping here"],
 				    ["max-sim=s" => "Maximium identity to retained sequences", { default => 0.8 }],
 				    ["genome-dir=s", "Directory holding PATRIC genome data", { default => "/vol/patric3/downloads/genomes" }],
 				    ["parallel|p=i" => "run this many parallel alignments", { default => 1 }],
 				    ["help|h" => "show this help message"]);
 print($usage->text), exit 0 if $opt->help;
-die($usage->text) unless @ARGV == 3;
+die($usage->text) unless @ARGV == 4;
 
 my $api = P3DataAPI->new();
 
 my $dir = shift;
+my $kmer_dir = shift;
 my $work_dir = shift;
 my $dest_dir = shift;
 
--d $dest_dir or die "Destination dir $dest_dir does not exist\n";
+my($function_to_index, $index_to_function) = read_function_index($kmer_dir);
 
-my $genus = basename($dir);
+my $genus = basename(abs_path($dir));
+
+my $local_families = PFLocalFamilies->load($dir);
+
+-d $dest_dir or die "Destination dir $dest_dir does not exist\n";
 
 my $genus_tax_id;
 if ($genus =~ /^(.*)-(\d+)$/)
@@ -58,6 +67,18 @@ if ($genus =~ /^(.*)-(\d+)$/)
     $genus_tax_id = $2;
 }
     
+my $esc_genus = $genus;
+$esc_genus =~ s/\s/_/g;
+
+my %gname;
+open(G, "<", "$dir/genome.names") or die "Cannot open $dir/genome.names: $!";
+while (<G>)
+{
+    chomp;
+    my($id, $n) = split(/\t/);
+    $gname{$id} = $n;
+}
+close(G);
 
 my $bootstrap = sub {
     my $p = P3AlignmentComputeToDisk->new($work_dir);
@@ -298,6 +319,16 @@ $sched->run($bootstrap, \&align_one, $opt->parallel);
 # When alignments are complete, roll the stats, reps and alignments up into btree databases.
 #
 
+open(PM, ">", "$dir/peg.map") or die "Cannot write $dir/peg.map: $!";
+
+#
+# Note the function index for the family so we can sort into blocks with the same function
+# index to efficiently write our family.fasta data
+#
+my @to_write = sort { $a->[1] <=> $b->[1] } map { [$_, $function_to_index->{$local_families->family($_)->function} ] } keys %fams_to_compute;
+
+my $func_dir = "$dir/fasta_by_function";
+make_path($func_dir);
 
 for my $type ('aa', 'dna')
 {
@@ -314,12 +345,65 @@ for my $type ('aa', 'dna')
     tie %alignments_raw, DB_File => "$work_dir/alignments.raw.$type.btree", O_RDWR | O_CREAT, 0644, $DB_BTREE
 	or die "Cannot tie $work_dir/alignments.raw.$type.btree: $!";
 
-    for my $fam (keys %fams_to_compute)
+
+    my $last_idx;
+    my $idx_fh;
+    if ($type eq 'aa')
     {
+	undef $last_idx;
+    }
+    for my $ent (@to_write)
+    {
+	my($fam, $idx) = @$ent;
+	
 	load(\%stats, $fam, "stats.$type.json");
 	load(\%reps, $fam, "reps.$type");
 	load(\%alignments_clean, $fam, "clean_$type.fa");
 	load(\%alignments_raw, $fam, "raw_$type.fa");
+
+	if ($type eq 'aa')
+	{
+	    defined($idx) or die "Fam $fam missing function idx\n";
+
+	    if ($idx != $last_idx)
+	    {
+		close($idx_fh) if $idx_fh;
+		$idx_fh = IO::File->new("$func_dir/$idx", "w");
+		$idx_fh or die "Could not open $func_dir/$idx: $!";
+		$last_idx = $idx;
+	    }
+	    
+	    #
+	    # If we are writing AA data, also write our peg.map and family.fasta fragments.
+	    #
+	    #
+	    my $fam_data = $local_families->family($fam);
+	    my $func = $fam_data->function;
+	    my $esc_func = uri_escape($func, " ,:");
+	    
+	    open(ST, "<", \ $alignments_clean{$fam}) or die "Cannot open ref to alignments_clean{$fam}: $!";
+	    while (my($rep, $def, $seq) = read_next_fasta_seq(\*ST))
+	    {
+		if ($rep =~ /^fig\|(\d+\.\d+)/)
+		{
+		    print PM join("\t", $rep, $genus, $fam, $idx, $func, $gname{$1}), "\n";
+		}
+		else
+		{
+		    die "Could not parse rep id $rep\n";
+		}
+
+		my $esc_gname = uri_escape($gname{$1}, " ,:");
+		my $id = join(":", $esc_genus, $genus_tax_id, $fam, $rep, $idx, $esc_func, $esc_gname);
+		$seq =~ s/-//g;
+		print_alignment_as_fasta($idx_fh, [$id, "$idx $func", $seq]);
+	    }
+	    close(ST);
+	}
+    }
+    if ($type eq 'aa')
+    {
+	close($idx_fh);
     }
 
     #
@@ -336,6 +420,7 @@ for my $type ('aa', 'dna')
 	copy("$work_dir/$file", "$dest_dir/$file");
     }
 }
+close(PM);
 
 #
 # Load data file into btree.
@@ -364,5 +449,25 @@ sub align_one
     close(STR);
 
     $p3align->process_data($genus, $key, \@data, $tag, $genetic_code);
+}
+
+sub read_function_index
+{
+    my($dir) = @_;
+
+    my $idx = {};
+    my $from_id = [];
+
+    open(F, "<", "$dir/function.index") or die "Cannot open $dir/function.index:$ !";
+    while (<F>)
+    {
+	chomp;
+	my($i, $fun) = split(/\t/);
+	$idx->{$fun} = $i;
+	$from_id->[$i] = $fun;
+    }
+    close(F);
+    
+    return($idx, $from_id);
 }
 

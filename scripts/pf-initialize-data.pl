@@ -66,7 +66,8 @@ my($opt, $usage) = describe_options("%c %o data-dir",
 				    ['rank=s', "Use the given taxon rank for grouping (defaults to genus)",
 				 		{ default => 'genus' }],
 				    ['genus|g=s@', 'Limit to the given genus. May be repeated for multiple genera.'],
-				    ['genomes=s', 'Limit to the genomes in this file'],
+				    ['genus-file|G=s', 'Limit to the genera listed in this file.'],
+				    ['genomes=s', 'Limit to the genomes in this file.'],
 				    ['phages!', 'Collect phages', { default => 1 }],
 				    ['check-quality!', 'Only use genomes with good quality', { default => 1 }],
 				    ['bad-genome|b=s@', "A bad genome. Don't use it.", { default => ['340189.4'] }],
@@ -152,7 +153,7 @@ for my $ent (@$genome_data)
     die "Data directory $data_dir already exists\n" if -d $data_dir;
 
     my $seqs_dir = "$data_dir/Seqs";
-    my $na_seqs_dir = "$data_dir/nr-seqs-dna";
+    my $na_seqs_dir = "$data_dir/NASeqs";
 
     make_path($data_dir, $seqs_dir, $na_seqs_dir);
 
@@ -200,11 +201,20 @@ sub get_genomes
     # Other viruses go into their own genus directories.
     #
 
-    my @genera_query;
+    my @genus_list;
     if ($opt->genus)
     {
-	@genera_query = (fq => "$rank:(" . join(" OR ", map { "\"$_\"" }  @{$opt->genus}) . ")" );
+	@genus_list = @{$opt->genus};
     }
+    if ($opt->genus_file)
+    {
+	my @x = read_file($opt->genus_file);
+	chomp @x;
+	s/^\s+// foreach @x;
+	s/\s+$// foreach @x;
+	push(@genus_list, @x);
+    }
+    my @genera_query = (fq => "$rank:(" . join(" OR ", map { "\"$_\"" }  @genus_list) . ")" );
 
     #
     # Scan the genomes. With the genus data collected above, we can process and classify

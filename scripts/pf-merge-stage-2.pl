@@ -9,19 +9,24 @@ use File::Basename;
 use gjoseqlib;
 use IPC::Run;
 use Proc::ParallelLoop;
+use PFCache qw(read_pegmap);
+use DB_File;
+use URI::Escape;
 
-my($opt, $usage) = describe_options("%c %o kmer-dir merge-dir",
+my($opt, $usage) = describe_options("%c %o kmer-dir genus-dir merge-dir",
 				    ['html-dir=s', 'If specified, write HTML summaries here'],
 				    ['inflation|I=s@', 'Run MCL with this inflation parameter', { default => [2.0]} ],
 				    ["parallel|p=i", "Run with this many procs", { default => 1 }],
+				    ["mcl=s", "Use this mcl executable", { default => "mcl" }],
 				    ["help|h", "Show this help message"]);
 
 print($usage->text), exit if $opt->help;
-die($usage->text) if @ARGV != 2;
+die($usage->text) if @ARGV != 3;
 
 my $kmer_dir = shift;
+my $genus_dir = shift;
 my $merge_dir = shift;
-my $mcl = '/scratch/olson/FuncGroups/bin/mcl';
+my $mcl = $opt->mcl;
 
 my $html_dir = $opt->html_dir;
 
@@ -114,14 +119,12 @@ for my $ent (@items)
 }
 
 my %peginfo;
-open(PM, "<", "$merge_dir/peg.map") or die "Cannot open $merge_dir/peg.map: $!";
-while (<PM>)
-{
-    chomp;
-    my @a = split(/\t/);
-    $peginfo{$a[0]} = \@a;
-}
-close(PM);
+
+#my $peginfo_db = "$merge_dir/peg.map.btree";
+#unlink($peginfo_db);
+#tie %peginfo, "DB_File", $peginfo_db, O_RDWR | O_CREAT, 0644, $DB_BTREE or die "Cannot tie $peginfo_db: $!";
+
+#read_pegmap($merge_dir, $genus_dir, \%peginfo);
 
 my @work = map { $_->[1] } @work_assigned;
 print Dumper(\@work, \@work_assigned);
@@ -163,13 +166,14 @@ for my $inflation (@{$opt->inflation})
 	    chomp;
 	    my(%genus, %genome, %lfam );
 	    my @pegs = split(/\t/);
-	    for my $peg (@pegs)
+	    for my $ent (@pegs)
 	    {
-		my $pi = $peginfo{$peg};
-		ref($pi) eq 'ARRAY' or die "No peginfo for '$peg' in file $mcl line $.";
-		my(undef, $genus, $lfam, $fidx, $fn, $genome) = @$pi;
-		$genus{$genus}++;
-		$genome{$genome}++;
+		my($genus_name, $genus_tax, $lfam, $peg, $fidx, $esc_func, $esc_genome) = split(/:/, $ent);
+		# my $pi = $peginfo{$peg};
+		# ref($pi) eq 'ARRAY' or die "No peginfo for '$peg' in file $mcl line $.";
+		# my(undef, $genus, $lfam, $fidx, $fn, $genome) = @$pi;
+		$genus{"$genus_name-$genus_tax"}++;
+		$genome{uri_unescape($esc_genome)}++;
 		$lfam{$lfam}++;
 	    }
 	    my $ngenus = scalar keys %genus;
@@ -188,6 +192,8 @@ if ($html_dir)
     close(I);    
 }
 
+#untie %peginfo;
+	
 sub process
 {
     my($fun, $function_name, $inflation, $dist_file, $mcl_file, $html_file) = @_;
@@ -287,3 +293,4 @@ sub read_function_index
     
     return($idx, $from_id);
 }
+

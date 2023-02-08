@@ -8,9 +8,12 @@ use Statistics::Descriptive;
 use File::Basename;
 use gjoseqlib;
 use IPC::Run;
+use IO::File;
 use Proc::ParallelLoop;
-use Graph;
+use Graph::Undirected;
 use DB_File;
+use PFCache qw(read_pegmap);
+
 #
 # Use the output of the MCL runs to compute the sets of local families to be merged, and generate
 # the global families.
@@ -20,6 +23,7 @@ use DB_File;
 my($opt, $usage) = describe_options("%c %o kmer-dir genus-data-dir merge-dir inflation > families",
 				    ["genera-from=s", "Merge genera from the given file"],
 				    ["genus|g=s@", "Merge the given genus (may be repeated)"],
+				    ["output|o=s", "Write output to this file"],
 				    ["help|h", "Show this help message"]);
 
 print($usage->text), exit if $opt->help;
@@ -61,6 +65,18 @@ if (@genera == 0)
 }
 my %genera = map { $_ => 1 } @genera;
 # die Dumper(\@genera)
+
+my $out_fh;
+if ($opt->output)
+{
+    $out_fh = IO::File->new($opt->output, "w");
+    $out_fh or die "Cannot open output file " . $opt->output . ": $!";
+}
+else
+{
+    $out_fh = \*STDOUT;
+}
+
 #
 # Load genus family data.
 #
@@ -123,24 +139,7 @@ print STDERR "Genus families loaded\n";
 #
 
 my %peginfo;
-
-if (tie %peginfo, 'DB_File', "$merge_dir/peg.map.btree", O_RDONLY, 0, $DB_BTREE)
-{
-    print STDERR "Tied to btree\n";
-}
-else
-{
-    print STDERR "Reading peg.map\n";
-
-    open(PM, "<", "$merge_dir/peg.map") or die "Cannot open $merge_dir/peg.map: $!";
-    while (<PM>)
-    {
-	chomp;
-	my @a = split(/\t/);
-	$peginfo{$a[0]} = \@a;
-    }
-    close(PM);
-}
+#read_pegmap($merge_dir, $genus_data_dir, \%peginfo);
 
 print STDERR "Peg mapping loaded\n";
 # print STDERR Dumper(\%local_fams);
@@ -153,6 +152,8 @@ print STDERR "Peg mapping loaded\n";
 my %merged;
 
 my %merged_in_fam;
+
+
 
 my $gfam = 'GF00000000';
 for my $mcl (<$merge_dir/mcl/$inflation/*>)
@@ -184,25 +185,26 @@ for my $mcl (<$merge_dir/mcl/$inflation/*>)
 	next unless @pegs > 1;
 	my $fam = [];
 	my %lf;
-	for my $peg (@pegs)
+	for my $ent (@pegs)
 	{
-	    my $pi = $peginfo{$peg};
-	    if (!defined($pi))
-	    {
-		warn "No peginfo for $pi\n";
-		next;
-	    }
-	    my($rep, $genus, $fam, $fidx, $fun);
-	    if (ref($pi))
-	    {
-		($rep, $genus, $fam, $fidx, $fun) = @$pi;
-	    }
-	    else
-	    {
-		($rep, $genus, $fam, $fidx, $fun) = split(/\t/, $pi);
-	    }
+	    my($genus_name, $genus_tax, $lfam, $peg, $fidx, $esc_func, $esc_genome) = split(/:/, $ent);
+	    # my $pi = $peginfo{$peg};
+	    # if (!defined($pi))
+	    # {
+	    # 	warn "No peginfo for $pi\n";
+	    # 	next;
+	    # }
+	    # my($rep, $genus, $fam, $fidx, $fun);
+	    # if (ref($pi))
+	    # {
+	    # 	($rep, $genus, $fam, $fidx, $fun) = @$pi;
+	    # }
+	    # else
+	    # {
+	    # 	($rep, $genus, $fam, $fidx, $fun) = split(/\t/, $pi);
+	    # }
 		
-	    my $lfamid = join($;, $genus, $fam);
+	    my $lfamid = join($;, "$genus_name-$genus_tax", $lfam);
 	    $lf{$lfamid} = 1;
 	}
 	$graph->add_path(keys %lf);
@@ -234,7 +236,7 @@ for my $mcl (<$merge_dir/mcl/$inflation/*>)
 		for my $pi (@$pl)
 		{
 		    my($peg, $len, $fun, $fam) = @$pi;
-		    print join("\t", $gfam, $nf, $ng, $peg, $len, $fun, $fam, $genus, $kgfam), "\n";
+		    print $out_fh join("\t", $gfam, $nf, $ng, $peg, $len, $fun, $fam, $genus, $kgfam), "\n";
 		}
 		$merged_in_fam{$lf} = $gfam;
 		$found++;
@@ -315,7 +317,7 @@ for my $lk (sort keys %local_fams)
     for my $pi (@$pl)
     {
 	my($peg, $len, $fun, $fam) = @$pi;
-	print join("\t", $gfam, 1, 1, $peg, $len, $fun, $fam, $genus, $kgfam), "\n";
+	print $out_fh join("\t", $gfam, 1, 1, $peg, $len, $fun, $fam, $genus, $kgfam), "\n";
     }
     $gfam++;
 }
