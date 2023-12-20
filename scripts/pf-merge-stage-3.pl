@@ -177,7 +177,7 @@ for my $mcl (<$merge_dir/mcl/$inflation/*>)
     # the local families.
     #
 
-    my $graph = Graph::Undirected->new();
+    my $graph = Graph::Undirected->new(unionfind => 1);
     while (<F>)
     {
 	chomp;
