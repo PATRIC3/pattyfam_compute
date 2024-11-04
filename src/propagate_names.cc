@@ -193,17 +193,6 @@ void FamData::read_fams_file()
 	 * one entry in a family with the given md5.
 	 */
 	    
-	#if 0
-	// after changing fam_to_md5s_ to a set, don't need this
-	auto fkiter = fid_is_key_.find(peg);
-	if (fkiter == fid_is_key_.end())
-	{
-	    if (debug)
-		std::cerr << "Skipping " << peg << " due to non-key" << std::endl;
-	    continue;
-	}
-	#endif
-
 	auto fkiter = fid_to_md5_.find(peg);
 	if (fkiter == fid_to_md5_.end())
 	{
@@ -268,6 +257,8 @@ void RenumberState::phase_1_body(const std::string &fam, std::set<std::string> &
 	    continue;
 
 	auto nfam = new_data_.peg_to_fam(peg);
+
+	/* Check for empty nfam here. Why? */
 	auto nfun = new_data_.fam_to_fun(nfam);
 
 	/*
