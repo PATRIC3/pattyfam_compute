@@ -13,10 +13,12 @@ to define the genomes to load.
     
 =cut
 
+use lib '/home/olson/perl5/lib/perl5';
+
 use strict;
 use File::Path 'make_path';
 use File::Slurp;
-use LWP::UserAgent;
+use LWP::UserAgent::Determined;
 use Getopt::Long::Descriptive;
 use List::MoreUtils 'first_index';
 use Data::Dumper;
@@ -289,7 +291,8 @@ sub load_genome_from_api
     #
     my %seq_len;
     
-    my $ua = LWP::UserAgent->new;
+    my $ua = LWP::UserAgent::Determined->new;
+    $ua->timing("1,1,1,5,5,5,10,10,20,20");
     my $block = 25000;
     my $start_idx = 0;
     while (1)
@@ -383,8 +386,14 @@ sub load_genome_from_api
 	    my $len = $seq_len{$acc};
 	    
 	    print GENE_NAMES "$id\t$gene\n" if $gene;
+
+	    if (!defined($len))
+	    {
+		warn "Could not find seq for " . Dumper($item);
+		next;
+	    }
 	    
-	    die Dumper($item) unless defined($len);
+	    #die Dumper($item) unless defined($len);
 	    if ($start < 10 || $end < 10 || $start > $len - 10 || $end > $len - 10)
 	    {
 		print TRUNC join("\t", $id, $start, $end, $len), "\n";

@@ -41,7 +41,10 @@ my($opt, $usage) = describe_options("%c %o kmer-dir family-dir",
 				    ["inflation=s" => "MCL inflation", { default => 3.0 }],
 				    ["good-cutoff=s" => "Fraction of members with unique genomes required to be 'good'", { default => 0.9 }],
 				    ["genome-dir=s", "Directory holding PATRIC genome data", { default => "/vol/patric3/downloads/genomes" }],
-				    ["kser=s" => "Path to kser executable", { default => "/scratch/olson/close_kmers/kser" }],
+				    ["kser=s" => "Path to kser executable", { default => "kmser" }],
+				    ["container=s" => "Container to use", { default => '/vol/patric3/production/containers/bvbrc-dev-258.sif' }],
+				    ["dev-container=s" => "Dev container path", { default => "/home/olson/P3/dev-families/dev_container" }],
+				    ["just-one" => "Only submit one"],
 				    ["help|h" => "Show this help message."]);
 print($usage->text), exit 0 if $opt->help;
 die($usage->text) if @ARGV != 2;
@@ -72,6 +75,7 @@ if ($opt->genus_index)
 	if (/(\d+)/)
 	{
 	    push(@$to_compute, $1);
+	    last if $opt->just_one;
 	}
     }
     close(TC);
@@ -196,6 +200,8 @@ sub submit_jobs
     my $good_cutoff = $opt->good_cutoff;
     my $kser = $opt->kser;
     my $genome_dir = $opt->genome_dir;
+    my $container = $opt->container;
+    my $dev_container = $opt->dev_container;
 
     for my $range (@ranges)
     {
@@ -217,10 +223,11 @@ export TEMPDIR=\$TMPDIR
 
 genus=`awk -F \$'\\t' "\\\\\$1 == \$SLURM_ARRAY_TASK_ID { print \\\\\$2}" $fam_dir/genus.index`
 hostname
+singularity exec -B /home,/vol,/disks $container sh -c ". $dev_container/user-env.sh; 
 pf-compute-local-families --identity $identity --inflation $inflation \\
     --good-cutoff $good_cutoff --parallel \$SLURM_JOB_CPUS_PER_NODE \\
     --genome-dir $genome_dir --kser $kser \\
-    $kmer_dir "$fam_dir/genus.data/\$genus"
+    $kmer_dir '$fam_dir/genus.data/\$genus'"
 END
     print "$batch\n\n";
 

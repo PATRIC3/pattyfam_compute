@@ -49,7 +49,7 @@ my($opt, $usage) = describe_options("%c %o work-dir gene-names nr-refs output-fa
 				    ["parallel=i" => "Parallel threads", { default => 1 }],
 				    ["large-family-cutoff=i" => "Cutoff for large families (to switch to parallel MCL)",
 				     { default => => 1_000_000_000 }],
-				    ["mcl=s" => "MCL executable", { default => "/disks/patric-common/runtime/bin/mcl" }],
+				    ["mcl=s" => "MCL executable", { default => "mcl" }],
 				    ["help|h" => "Show this help message."]);
 print($usage->text), exit 0 if $opt->help;
 die($usage->text) if @ARGV != 5;
@@ -187,7 +187,7 @@ for my $fam (@fams)
 {
     if (!open(F, "<", "$mcl_dir/$fam"))
     {
-	warn "cannot open $mcl_dir/$fam: $!";
+	warn "Empty family for $mcl_dir/$fam\n";
 	next;
     }
 
