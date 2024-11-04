@@ -382,7 +382,7 @@ print LOG "start pf-compute-local-family-alignments.pl $tstart\n";
 run(["pf-compute-local-family-alignments",
      "--genome-dir", $opt->genome_dir,
      "--parallel", $opt->parallel,
-     $fam_dir, $align_work_dir, $fam_dir]);
+     $fam_dir, $kmer_dir, $align_work_dir, $fam_dir]);
 
 my $tend = gettimeofday;
 my $elap = $tend - $tstart;

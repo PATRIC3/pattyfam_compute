@@ -168,7 +168,7 @@ sub process_data
 	if ($@ || !$ok)
 	{
 	    my $msg = $@ ? $@ : "mafft failed: $mafft_err";
-	    print STDERR "Mafft failed: $msg\n";
+	    print STDERR "Mafft failed for genus $genus family $family: $msg\n";
 	    $self->write_stats({ error => "mafft failed: $msg" }, $seq_type, $fam_dir);
 	    return;
 	}

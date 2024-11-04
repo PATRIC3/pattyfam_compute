@@ -19,6 +19,7 @@ use DB_File;
 use P3AuthToken;
 use Proc::ParallelLoop;
 use LPTScheduler;
+use PFCache qw(compute_cache_path);
 
 my $token = P3AuthToken->new;
 my @auth = (Authorization => $token->token);
@@ -63,16 +64,6 @@ $sched->run(sub {}, sub {
     load_genome_from_api($item);
 });
 
-sub compute_cache_path
-{
-    my($gid) = @_;
-    my $xgid = "000" . $gid;
-    my($subdir) = $xgid =~ /(\d{3})\./;
-    my $path = "$cache_base_dir/$subdir/$gid";
-    make_path($path);
-    return $path;
-}
-
 sub load_genome_from_api
 {
     my($gid) = @_;
@@ -84,7 +75,7 @@ sub load_genome_from_api
 	return;
     }
 
-    my $cache_dir = compute_cache_path($gid);
+    my $cache_dir = compute_cache_path($cache_base_dir, $gid);
 
     my $dna_seq = "$cache_dir/dna.fa";
     my $aa_seq = "$cache_dir/aa.fa";
@@ -142,7 +133,6 @@ sub load_genome_from_api
 	for my $item (@$items)
 	{
 	    $seq_len{$item->{accession}} = $item->{length};
-	    print SEQ_LEN "$item->{accession}\t$item->{length}\n";
 	}
 	if ($tstop < $tlast)
 	{
@@ -153,13 +143,13 @@ sub load_genome_from_api
 	    last;
 	}
     }
-    close(SEQ_LEN);
     #
     # Now we can query the features.
     #
 
     open(GENE_NAMES, ">", $gene_names) or die "Cannot write $gene_names: $!";
     open(TRUNC, ">", $trunc) or die "Cannot write $trunc: $!";
+    open(BAD_SEQS, ">", $bad_seqs) or die "Cannot write $bad_seqs: $!";
 
     $start_idx = 0;
     my %aa_seq_id;
@@ -294,6 +284,8 @@ sub load_genome_from_api
 		    else
 		    {
 			print_alignment_as_fasta(\*AA_SEQS, [$id, '', $seq]);
+			print SEQ_LEN join("\t", $id, length($seq)),"\n";
+
 		    }
 		}
 		else
@@ -312,6 +304,7 @@ sub load_genome_from_api
 	    }
 	}
     }
+    close(SEQ_LEN);
     close(DNA_SEQS);
     close(AA_SEQS);
 }

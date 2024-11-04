@@ -25,6 +25,7 @@ use strict;
 use gjoseqlib;
 use Getopt::Long::Descriptive;
 use Data::Dumper;
+use IO::File;
 
 my($opt, $usage) = describe_options("%c %o genus-data-dir",
 				    ["skip-dna", "Skip computing DNA NR"],
@@ -172,12 +173,23 @@ if (!$opt->skip_dna)
     {
 	next if -s "$dna_dir/$genome";
 	
-	my $dna = $opt->genome_dir . "/$genome/$genome.PATRIC.ffn";
-	open(O, ">", "$dna_dir/$genome") or die "cannot write $dna_dir/$genome: $!";
+	my $dna1 = $opt->genome_dir . "/$genome/$genome.PATRIC.ffn";
 	
-	if (open(G, "<", $dna))
+	my $fh = IO::File->new($dna1, "r");
+	if (!$fh)
 	{
-	    while (my($idx, $def, $seq) = read_next_fasta_seq(\*G))
+	    my $dna2 = "$fam_dir/NASeqs/$genome";
+	    $fh = IO::File->new($dna2, "r");
+	    if (!$fh)
+	    {
+		warn "could not read DNA from either $dna1 or $dna2\n";
+	    }
+	}
+	if ($fh)
+	{
+	    open(O, ">", "$dna_dir/$genome") or die "cannot write $dna_dir/$genome: $!";
+	    
+	    while (my($idx, $def, $seq) = read_next_fasta_seq($fh))
 	    {
 		my($id) = $idx =~ (/(fig\|\d+\.\d+\.[^.]+\.\d+)/);
 		
@@ -187,13 +199,7 @@ if (!$opt->skip_dna)
 		}
 	    }
 	}
-	else
-	{
-	    warn "Cannot open $dna: $!";
-	    next;
-	}
 	
 	close(O);
-	close(G);
     }
 }
