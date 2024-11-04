@@ -4,6 +4,10 @@ include $(TOP_DIR)/tools/Makefile.common
 DEPLOY_RUNTIME ?= /kb/runtime
 TARGET ?= /kb/deployment
 
+APP_CXX = propagate_names
+BIN_CXX = $(addprefix $(BIN_DIR)/,$(APP_CXX))
+DEPLOY_CXX = $(addprefix $(TARGET)/bin,$(APP_CXX))
+
 SRC_PERL = $(wildcard scripts/*.pl)
 BIN_PERL = $(addprefix $(BIN_DIR)/,$(basename $(notdir $(SRC_PERL))))
 DEPLOY_PERL = $(addprefix $(TARGET)/bin/,$(basename $(notdir $(SRC_PERL))))
@@ -27,7 +31,38 @@ TPAGE_ARGS = --define kb_top=$(TARGET) --define kb_runtime=$(DEPLOY_RUNTIME) --d
 
 all: bin 
 
-bin: $(BIN_PERL) $(BIN_SERVICE_PERL)
+bin: $(BIN_PERL) $(BIN_SERVICE_PERL) $(BIN_CXX)
+
+#PROFILE = -pg
+OPT = -O3
+DEBUG = -g
+INC = $(BOOST_INC) $(TBB_FLAGS) $(NUDB_INCLUDE) $(CMPH_INCLUDE) -I../signature_kmers/src
+CXXFLAGS = $(PROFILE) $(DEBUG) $(OPT) $(INC)
+LDFLAGS = -Wl,-rpath,$(BOOST)/lib -Wl,-rpath,$(CMPH)/lib $(PROFILE)
+
+LIBS = $(BOOST_LIBS) $(TBB_LIBS) $(CMPH_LIB) $(LOG4CXX_LIB)
+
+LOG4CXX_LIB = -llog4cxx
+
+BOOST = $(KB_RUNTIME)/boost-latest
+
+BOOST_INC = -I$(BOOST)/include
+BOOST_LIBS = \
+	-L $(BOOST)/lib \
+	-lboost_program_options \
+	-lboost_filesystem \
+	-lboost_thread \
+	-lboost_regex
+#
+# Parallel algorithms on ubuntu result in TBB deprecation messages
+#
+TBB_FLAGS = -DTBB_SUPPRESS_DEPRECATED_MESSAGES=1 -DTBB_PREVIEW_CONCURRENT_ORDERED_CONTAINERS=1
+TBB_LIBS = -ltbbmalloc -ltbb
+
+PROPAGATE_NAMES_OBJS = src/propagate_names.o
+propagate_names: $(PROPAGATE_NAMES_OBJS)
+	$(CXX) $(LDFLAGS) -o $@ $(PROPAGATE_NAMES_OBJS) $(LIBS)
+
 
 deploy: deploy-all
 deploy-all: deploy-client 

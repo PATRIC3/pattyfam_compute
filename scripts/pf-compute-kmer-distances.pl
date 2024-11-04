@@ -11,7 +11,7 @@
 
 This is a pattyfam computation support routine.
 
-Use a loaded kser via the given matrix URL to compute all to all kmer distances
+Use kmers-matrix-distance to compute all to all kmer distances
 for the given sequences.     
 
 Generate a local ID so we do not create filenames with functions.
@@ -25,6 +25,7 @@ use strict;
 use POSIX;
 use Time::HiRes 'gettimeofday';
 use File::Slurp;
+use File::Basename;
 use Getopt::Long::Descriptive;
 use KmerGutsNet;
 use gjoseqlib;
@@ -37,7 +38,7 @@ use File::Slurp;
 use Carp::Always;
 use LPTScheduler;
 
-my($opt, $usage) = describe_options("%c %o matrix-url seqs-dir calls-file uncalled-ids-file work-dir",
+my($opt, $usage) = describe_options("%c %o kmer-dir seqs-dir calls-file uncalled-ids-file work-dir",
 				    ["parallel=i" => "Parallel threads", { default => 1 }],
 				    ["num-fams|n=i" => "Only process N families (for debugging)"],
 				    ["truncated-pegs=s" => "File containing possibly truncated pegs"],
@@ -47,7 +48,7 @@ my($opt, $usage) = describe_options("%c %o matrix-url seqs-dir calls-file uncall
 print($usage->text), exit 0 if $opt->help;
 die($usage->text) if @ARGV != 5;
 
-my $matrix_url = shift;
+my $kmer_dir = shift;
 my $seqs_dir = shift;
 my $calls_file = shift;
 my $uncalled_ids_file = shift;
@@ -59,8 +60,9 @@ my $map_file = "$work_dir/map";
 my $fasta_dir = "$work_dir/fasta";
 my $dist_dir = "$work_dir/dist";
 my $mcl_dir = "$work_dir/mcl";
+my $orig_file_dir = "$work_dir/orig";
 
-make_path($fasta_dir, $dist_dir, $mcl_dir);
+make_path($fasta_dir, $dist_dir, $mcl_dir, $orig_file_dir);
 
 -d $seqs_dir or die "Seqs directory $seqs_dir does not exist\n";
 -f $calls_file or die "Called file $calls_file does not exist\n";
@@ -245,7 +247,7 @@ for my $fam (@to_stratify)
     # Create three new families - fasta/fam plus two new ones.
     #
 
-    my $old = "$fasta_dir/$fam.pre_stratify";
+    my $old = "$orig_file_dir/$fam.pre_stratify";
     my $file1 = "$fasta_dir/$fam";
     my $fam2 = $next_id++;
     my $fam3 = $next_id++;
@@ -329,54 +331,26 @@ for my $fam (keys %hypo_fam)
 }
 close(HP);
 
-
 #
-# Now that we have a directory of per-function sequence data, we will
-# invoke the kser engine via kmer_guts_net to compute the
-# kmer distances between each member of each family. We will do this in
-# parallel.
-
-my $kgn = KmerGutsNet->new($matrix_url);
-
+# Process the families of length 0 and 1 so we don't have to waste compute time on them.
 #
-# Construct a pool of work 10x our parallelism, and schedule
-# families into it using LPT algorithm.
-#
-
-my @fams_in_order = sort { $fam_sequence_size{$b} <=> $fam_sequence_size{$a} } keys %fam_sequence_size;
-
-my $n_buckets = $opt->parallel * 10;
-my $scheduler = LPTScheduler->new($n_buckets);
-
-for my $f (@fams_in_order)
+while (my ($fam, $count) = each %fam_sequence_count)
 {
-    $scheduler->add_work([$f, $fam_func{$f}], $fam_sequence_size{$f});
-}
-
-print STDERR "$0 pid $$ starting parallel\n";
-
-$scheduler->run(sub {}, \&work, $opt->parallel);
-
-sub work
-{
-    my($global, $ent) = @_;
-
-    my($fam, $fun) = @$ent;
-    print STDERR "Proc $fam $fun\n";
-    
     #
     # If family has a single sequence, the MCL file just has the sequence ID. Singleton.
     #
     
-    if ($fam_sequence_count{$fam} == 0)
+    if ($count == 0)
     {
 	open(M, ">", "$mcl_dir/$fam") or die "Cannot write $mcl_dir/$fam: $!";
 	open(MO, ">", "$mcl_dir/$fam.mcl.out") or die "Cannot write $mcl_dir/$fam.mcl.out: $!";
-	print MO "Not running MCL for empty family $fam $fun\n";
+	print MO "Not running MCL for empty family $fam\n";
 	close(M);
 	close(MO);
+	open(D, ">", "$dist_dir/$fam");
+	close(D);
     }
-    elsif ($fam_sequence_count{$fam} == 1)
+    elsif ($count == 1)
     {
 	open(M, ">", "$mcl_dir/$fam") or die "Cannot write $mcl_dir/$fam: $!";
 	open(MO, ">", "$mcl_dir/$fam.mcl.out") or die "Cannot write $mcl_dir/$fam.mcl.out: $!";
@@ -390,56 +364,30 @@ sub work
 	else
 	{
 	    die "Singleton fam file $fasta_dir/fam not of expected format: $l";
-	}
+ 	}
 	close(M);
 	close(S);
 	close(MO);
+	open(D, ">", "$dist_dir/$fam");
+	close(D);
     }
     else
     {
-	
-	my $dist_size = -s "$dist_dir/$fam";
-	my $dist_exists = -f _;
-	if (! $dist_exists)
-	{
-	    print STDERR "Processing $dist_dir/$fam as it does not exist\n";
-	    
-	    my $data;
-	    my $res;
-	    eval {
-		$data = read_file("$fasta_dir/$fam");
-		# print "Got data $data\n";
-		$res = $kgn->request($data, { d => 1, a => 1 });
-	    };
-	    if ($@)
-	    {
-		die "Error requesting data for $fasta_dir/$fam: $@";
-	    }
-	    # print "writing size=" . length($res) . "\n";
-	    write_file("$dist_dir/$fam", $res // "");
-
-	    $dist_size = -s "$dist_dir/$fam";;
-	    print STDERR "$dist_dir/$fam now $dist_size bytes\n";
-	}
-	
-	#
-	# Verify at least the first line if the file isn't empty.
-	#
-	if ($dist_size > 0)
-	{
-	    open(my $dfh, "<", "$dist_dir/$fam") or die "Cannot open $dist_dir/$fam: $!";
-	    my $l = <$dfh>;
-	    
-	    if ($l !~ /^fig/)
-	    {
-		my $s = substr($l, 0, 80);
-		my $len = length($l);
-		die "Dist file $dist_dir/$fam does not start with 'fig': '$s' (line length $len)";
-	    }
-	}
+	next;
     }
 }
 
+my @cmd = ("kmers-matrix-distance-folder",
+	   "-j", $opt->parallel,
+	   $kmer_dir,
+	   $fasta_dir,
+	   $dist_dir);
+my $rc = system(@cmd);
+if ($rc != 0)
+{
+    die "Cmd failed with $rc: @cmd\n";
+}
+	    
 #
 # Remove truncated pegs from the given fasta file.
 #
@@ -467,7 +415,8 @@ sub remove_truncated
     }
     close(IN);
     close(OUT);
-    rename($file, "$file.orig") or die "Error renaming $file to $file.org: $!";
+    my $orig = "$orig_file_dir/" . basename($file);
+    rename($file, $orig) or die "Error renaming $file to $file.org: $!";
     rename($new, $file) or die "Error renaming $new to $file: $!";
     print STDERR "Truncate of $file complete. $n_in input sequences, $n_out output sequences\n";
     return $n_out;

@@ -35,7 +35,8 @@ my($opt, $usage) = describe_options("%c %o kmer-dir genus-data-dir",
 				    ["parallel=i" => "Parallel threads", { default => 1 }],
 				    ["tmpdir=s" => "Temp dir"],
 				    ["genome-dir=s", "Directory holding PATRIC genome data", { default => "/vol/patric3/downloads/genomes" }],
-				    ["kser=s" => "Path to kser executable", { default => "kser" }],
+			    ["kser=s" => "Path to kser executable", { default => "kser" }],
+
 				    ["help|h" => "Show this help message."]);
 print($usage->text), exit 0 if $opt->help;
 die($usage->text) if @ARGV != 2;
@@ -54,11 +55,11 @@ if (! -d $tmpdir)
 #
 # Use a system-local temp space for processing the large kmer data sets.
 #
-my $work_dir = File::Spec->tmpdir() . "/work." . basename($fam_dir);
+#my $work_dir = File::Spec->tmpdir() . "/work." . basename($fam_dir);
+my $work_dir = $tmpdir . "/work." . basename($fam_dir);
 
 -d $work_dir and die "Work directory $work_dir already exists\n";
 make_path($work_dir);
-
 
 if ($opt->logfile)
 {
@@ -96,63 +97,6 @@ if (! -s "$fam_dir/nr/peg.synonyms")
 }
 
 #
-# Start the stateful kmer server
-#
-
-my $kser_port_file = "$tmpdir/kser_port";
-my @kser_cmd = ($opt->kser, 
-		"--reserve-mapping", 10000000,
-		"--n-kmer-threads", $opt->parallel,
-		"--listen-port-file", $kser_port_file, 0, $kmer_dir);
-
-unlink($kser_port_file);
-
-my $kser_pid = fork;
-if (!defined($kser_pid))
-{
-    die "fork failed: $!";
-}
- if ($kser_pid == 0)
-{
-    print "Starting kser_cmd in $$: @kser_cmd\n";
-    exec(@kser_cmd);
-    die "Kser did not start $?: @kser_cmd\n";
-}
-
-my $kser_port;
-while (1)
-{
-    my $kid = waitpid($kser_pid, WNOHANG);
-    if ($kid)
-    {
-	die "kser server did not start\n";
-    }
-    if (-s $kser_port_file)
-    {
-	$kser_port = read_file($kser_port_file);
-	print "Read '$kser_port' from $kser_port_file\n";
-	chomp $kser_port;
-	if ($kser_port !~ /^\d+$/)
-	{
-	    kill(1, $kser_pid);
-	    kill(9, $kser_pid);
-	    die "Invalid kser port '$kser_port'\n";
-	}
-	last;
-    }
-    sleep(0.1);
-}
-
-print "Kser running pid $kser_pid on port $kser_port\n";
-
-my $add_url = "http://localhost:$kser_port/add";
-my $matrix_url = "http://localhost:$kser_port/matrix";
-
-$SIG{__DIE__} = sub {
-    kill 1, $kser_pid;
-};
-
-#
 # If we have an nr-seqs directory, use that for sequences. Initialize pegs_to_inflate and
 # pegs_for_singleton_fams from the nr-refs file.
 
@@ -179,28 +123,26 @@ else
 }
 
 #
-# Use pf-annotate-seqs to annotate the chosen sequences.
+# Use kmers-annotate-seqs to annotate the chosen sequences.
 #
-# We pass the /add URL from the kser since that will call the
-# proteins with a side effect of adding the signature kmers to its
-# internal table that maps pegs and kmers.
 
 my $tstart = gettimeofday;
-print LOG "start pf-annotate-seqs $tstart\n";
+print LOG "start kmers-annotate-seqs $tstart\n";
 
 my $calls_file = "$tmpdir/calls";
 my $uncalled_ids_file = "$tmpdir/missed";
 
-my @anno_cmd = ('pf-annotate-seqs',
+my @anno_cmd = ('kmers-annotate-seqs',
 		"--parallel", $opt->parallel,
 		"--truncated-pegs", "$fam_dir/truncated.genes",
 		$add_url, $fam_dir, $seqs_dir, $calls_file, $uncalled_ids_file);
+
 print "@anno_cmd\n";
 my $rc = system(@anno_cmd);
 
 my $tend = gettimeofday;
 my $elap = $tend - $tstart;
-print LOG "finish pf-annotate-seqs $tend $elap\n";
+print LOG "finish kmers-annotate-seqs $tend $elap\n";
 
 $rc == 0 or die "annotation failed with $rc: @anno_cmd\n";
 
@@ -215,7 +157,7 @@ my $cmd = ["pf-compute-kmer-distances",
 	   "--parallel", $opt->parallel,
 #	   "--remove-truncated-threshold", 1000,
 	   "--truncated-pegs", "$fam_dir/truncated.genes",
-	   $matrix_url, $seqs_dir,
+	   $kmer_dir, $seqs_dir,
 	   $calls_file, $uncalled_ids_file,
 	   $work_dir];
 print STDERR "Run: @$cmd\n";
@@ -224,7 +166,6 @@ run($cmd) or die "pf-compute-kmer-distances failed: $?";
 my $tend = gettimeofday;
 my $elap = $tend - $tstart;
 print LOG "finish pf-compute-kmer-distances $tend $elap\n";
-kill 1, $kser_pid;
 
 #
 # Compute kmer clusters with MCL

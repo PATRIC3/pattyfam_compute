@@ -17,6 +17,7 @@ use File::Basename;
 
 my($opt, $usage) = describe_options("%c %o [log-files] ::: [family-files]",
 				    ["output-directory|o=s" => "If specified write output files to this directory named using the name of the input family file. Otherwise write to standard output"],
+				    ["genus-map=s" => "File containing old-genus to new-genus mapping. Used to map to the new format where genus names are Genus-Taxid"],
 				    ["max-id-file=s" => "File containing family max used ID values (required)"],
 				    ["local-fam-map-file=s" => "Write this file with local family id mappings"],
 				    ["global-fam-map-file=s" => "Write this file with global family id mappings"],
@@ -25,6 +26,21 @@ my($opt, $usage) = describe_options("%c %o [log-files] ::: [family-files]",
 
 print($usage->text), exit 1 if $opt->help;
 die($usage->text) if @ARGV < 3 || !$opt->max_id_file;
+
+my %genus_map;
+
+if ($opt->genus_map)
+{
+    open(G, "<", $opt->genus_map) or die sprintf "Cannot open genus map %s: $!", $opt->genus_map;
+
+    while (<G>)
+    {
+	chomp;
+	my($old, $new, $tax, $full_new) = split(/\t/);
+	$genus_map{$old} = $full_new;
+    }
+    close(G);
+}
 
 #
 # Find logfiles before the ::: indicator and family files after the ::: indicator.
@@ -76,6 +92,7 @@ sub main
     {
 	chomp;
 	my($fam, $val) = split(/\t/);
+	# $fam = $genus_map{$fam} // $fam;
 	$next_id{$fam} = 1 + $val;
     }
     close(MID);
@@ -185,6 +202,12 @@ sub read_log_file
 	elsif (/^(.*?)\s+NOW\s+(.*?)(\s+weight=.*)?$/)
 	{
 	    my($new, $old) = ($1, $2);
+
+	    if ($new eq '')
+	    {
+		warn "$file:$.: new fam is empty\n";
+		next;
+	    }
 	    my $map;
 	    my $genus;
 	    if ($new =~ /^(.*?)\.(\d+)/)
@@ -213,7 +236,7 @@ sub read_log_file
 		}
 	    }
 
-	    defined($map->{$new}) && die "map entry for $new already exists with $old";
+	    defined($map->{$new}) && die "map entry for $new already exists with $old: $_";
 	    # print "MAP '$new' '$old_upd'\t'$_'\n";
 	    $map->{$new} = $old_upd;
 	}
