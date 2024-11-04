@@ -13,10 +13,12 @@ to define the genomes to load.
     
 =cut
 
+use lib '/home/olson/perl5/lib/perl5';
+
 use strict;
 use File::Path 'make_path';
 use File::Slurp;
-use LWP::UserAgent;
+use LWP::UserAgent::Determined;
 use Getopt::Long::Descriptive;
 use List::MoreUtils 'first_index';
 use Data::Dumper;

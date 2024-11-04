@@ -187,7 +187,7 @@ for my $fam (@fams)
 {
     if (!open(F, "<", "$mcl_dir/$fam"))
     {
-	warn "cannot open $mcl_dir/$fam: $!";
+	warn "Empty family for $mcl_dir/$fam\n";
 	next;
     }
 

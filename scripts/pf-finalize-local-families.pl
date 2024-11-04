@@ -52,6 +52,7 @@ use DB_File;
 use Getopt::Long::Descriptive;
 
 my($opt, $usage) = describe_options("%c %o fam-dir fam-file [fam-file...]",
+				    ["truncated-pegs=s" => "File containing possibly truncated pegs"],
 				    ["parallel=i" => "Parallel threads", { default => 1 }],
 				    ["help|h" => "Show this help message."]);
 
@@ -60,6 +61,29 @@ die($usage->text) if @ARGV < 2;
 
 my $fam_dir = shift;
 my @fam_files = @ARGV;
+
+#
+# Load the truncated-pegs data if present
+#
+my %truncated_pegs;
+
+if ($opt->truncated_pegs)
+{
+    if (open(TRUNC, "<", $opt->truncated_pegs))
+    {
+	while (<TRUNC>)
+	{
+	    chomp;
+	    my($id) = split(/\t/);
+	    $truncated_pegs{$id} = 1;
+	}
+	close(TRUNC);
+    }
+    else
+    {
+	warn "Cannot open truncated pegs file " . $opt->truncated_pegs . ": $!\n";
+    }
+}
 
 #
 # we write to fam-dir/local.family.members and local.family.defs
@@ -94,7 +118,10 @@ for my $fam (@fam_files)
 	    push(@sets, $cur_set);
 	    $last_key = $key;
 	}
-	push(@$cur_set, [$func, $fam, $peg, $gene_name, $consensus_gene_name, $seq_len{$peg}]);
+	if (!$truncated_pegs{$peg})
+	{
+	    push(@$cur_set, [$func, $fam, $peg, $gene_name, $consensus_gene_name, $seq_len{$peg}]);
+	}
     }
     close(F);
     $src_key++;
@@ -107,6 +134,7 @@ foreach my $set (sort { (@$b <=> @$a) or
 		        ($a->[1] <=> $b->[1])
 		      } @sets)
 {
+    next if @$set == 0;
     my($mean,$std_dev) = &mean_stddev(map { $_->[5] } @$set);
 
     my($fam, $subfam, undef, undef, $consensus_gene_name) = @{$set->[0]};

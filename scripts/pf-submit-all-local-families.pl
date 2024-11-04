@@ -74,6 +74,7 @@ if ($opt->genus_index)
 	if (/(\d+)/)
 	{
 	    push(@$to_compute, $1);
+	    last if $opt->just_one;
 	}
     }
     close(TC);

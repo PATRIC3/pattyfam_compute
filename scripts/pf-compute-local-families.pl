@@ -35,6 +35,8 @@ my($opt, $usage) = describe_options("%c %o kmer-dir genus-data-dir",
 				    ["parallel=i" => "Parallel threads", { default => 1 }],
 				    ["tmpdir=s" => "Temp dir"],
 				    ["genome-dir=s", "Directory holding PATRIC genome data", { default => "/vol/patric3/downloads/genomes" }],
+			    ["kser=s" => "Path to kser executable", { default => "kser" }],
+
 				    ["help|h" => "Show this help message."]);
 print($usage->text), exit 0 if $opt->help;
 die($usage->text) if @ARGV != 2;
@@ -132,7 +134,9 @@ my $uncalled_ids_file = "$tmpdir/missed";
 
 my @anno_cmd = ('kmers-annotate-seqs',
 		"--parallel", $opt->parallel,
-		$kmer_dir, $fam_dir, $seqs_dir, $calls_file, $uncalled_ids_file);
+		"--truncated-pegs", "$fam_dir/truncated.genes",
+		$add_url, $fam_dir, $seqs_dir, $calls_file, $uncalled_ids_file);
+
 print "@anno_cmd\n";
 my $rc = system(@anno_cmd);
 
@@ -294,6 +298,7 @@ my $tstart = gettimeofday;
 print LOG "start pf-finalize-local-families $tstart\n";
 
 run(["pf-finalize-local-families",
+     "--truncated-pegs", "$fam_dir/truncated.genes",
      $fam_dir, "$fam_dir/blast.clusters", "$fam_dir/kmer.clusters", "$fam_dir/singleton.fams"]);
 run(["pf-inflate-families", 
      "-o", "$fam_dir/local.family.members.expanded",

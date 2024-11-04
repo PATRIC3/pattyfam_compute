@@ -30,6 +30,7 @@ use LPTScheduler;
 
 my($opt, $usage) = describe_options("%c %o kmer-server-url genus-data-dir sequences-dir calls-file uncalled-ids-file",
 				    ["parallel=s" => "Parallel threads", { default => 1 }],
+				    ["truncated-pegs=s" => "File containing possibly truncated pegs"],
 				    ["help|h" => "Show this help message."]);
 print($usage->text), exit 0 if $opt->help;
 die($usage->text) if @ARGV != 5;
@@ -39,6 +40,31 @@ my $fam_dir = shift;
 my $seqs_dir = shift;
 my $calls_file = shift;
 my $uncalled_file = shift;
+
+
+#
+# Load the truncated-pegs data if present
+#
+my %truncated_pegs;
+
+if ($opt->truncated_pegs)
+{
+    if (open(TRUNC, "<", $opt->truncated_pegs))
+    {
+	while (<TRUNC>)
+	{
+	    chomp;
+	    my($id) = split(/\t/);
+	    $truncated_pegs{$id} = 1;
+	}
+	close(TRUNC);
+    }
+    else
+    {
+	warn "Cannot open truncated pegs file " . $opt->truncated_pegs . ": $!\n";
+    }
+}
+
 
 #
 # Construct the LPT scheduler where work elements are genomes to be annotated. Work size is

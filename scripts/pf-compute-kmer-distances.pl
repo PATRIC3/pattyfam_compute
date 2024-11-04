@@ -144,7 +144,7 @@ while (<C>)
 	{
 	    close(FH);
 	    # print STDERR "Finish $cur_fam, size=$fam_sequence_count{$cur_fam}\n";
-	    if ($fam_sequence_count{$cur_fam} > $opt->remove_truncated_threshold)
+	    if (0 && $fam_sequence_count{$cur_fam} > $opt->remove_truncated_threshold)
 	    {
 		my $n = remove_truncated("$fasta_dir/$cur_fam");
 		if ($n > $opt->remove_truncated_threshold)
@@ -162,13 +162,20 @@ while (<C>)
 	$next_id++;
 	$last = $func;
     }
-    print_alignment_as_fasta(\*FH, [$fid, $func, $seqs{$fid}]);
-    $fam_sequence_size{$cur_fam} += length($seqs{$fid});
-    $fam_sequence_count{$cur_fam}++;
+    if (!$truncated_pegs{$fid})
+    {
+	print_alignment_as_fasta(\*FH, [$fid, $func, $seqs{$fid}]);
+	$fam_sequence_size{$cur_fam} += length($seqs{$fid});
+	$fam_sequence_count{$cur_fam}++;
+    }
+    else
+    {
+	print STDERR "Skip truncated $fid\n";
+    }
     
 }
 # print STDERR "Finish $cur_fam, size=$fam_sequence_count{$cur_fam}\n";
-if ($fam_sequence_count{$cur_fam} > $opt->remove_truncated_threshold)
+if (0 && $fam_sequence_count{$cur_fam} > $opt->remove_truncated_threshold)
 {
     my $n = remove_truncated("$fasta_dir/$cur_fam");
     if ($n > $opt->remove_truncated_threshold)
@@ -208,7 +215,8 @@ if (-s $uncalled_ids_file)
     while (<M>)
     {
 	chomp;
-	if (/(fig\|\d+\.\d+\.peg\.\d+)/)
+	if (/(fig\|\d+\.\d+\.peg\.\d+)/ &&
+	    !$truncated_pegs{$1})
 	{
 	    print_alignment_as_fasta(\*FH, [$1, "hypothetical protein", $seqs{$1}]);
 	    $fam_sequence_size{$cur_fam} += length($seqs{$1});
