@@ -11,12 +11,14 @@ use IPC::Run;
 use Proc::ParallelLoop;
 use PFCache qw(read_pegmap);
 use DB_File;
+use Time::HiRes qw(gettimeofday);
 use URI::Escape;
 
 my($opt, $usage) = describe_options("%c %o kmer-dir genus-dir merge-dir",
 				    ['html-dir=s', 'If specified, write HTML summaries here'],
 				    ['inflation|I=s@', 'Run MCL with this inflation parameter', { default => [2.0]} ],
 				    ["parallel|p=i", "Run with this many procs", { default => 1 }],
+				    ["mcl-parallel|P=i", "Run with this many threads for mcl", { default => 1 }],
 				    ["mcl=s", "Use this mcl executable", { default => "mcl" }],
 				    ["help|h", "Show this help message"]);
 
@@ -77,11 +79,11 @@ for my $inflation (@{$opt->inflation})
     {
 	my $f = basename($dist);
 	my $fn = $id_to_fn->[$f];
-# 	if ($fn eq 'hypothetical protein')
-# 	{
-# 	    # we will deal with these separately
-# 	    next;
-# 	}
+ 	if ($fn eq 'hypothetical protein')
+	{
+ 	    # we will deal with these separately
+ 	    next;
+ 	}
 	if (-s $dist == 0)
 	{
 	    open(my $fh, ">", "$mcl_dir/$f");
@@ -136,7 +138,12 @@ pareach \@work, sub {
     my $work_list = shift;
     for my $work (@$work_list)
     {
+	my $t1 = gettimeofday;
 	process(@$work);
+	my $t2 = gettimeofday;
+	my ($fun, $function_name, $inflation, $dist_file, $mcl_file, $html_file) = @$work;
+	my $elap = $t2 - $t1;
+	print join("\t", "ITEM", $fun, $dist_file, -s $dist_file, $elap), "\n";
     }
 }, { Max_Workers => $opt->parallel };
 
@@ -224,7 +231,11 @@ sub process
     {
 	my $ok = IPC::Run::run(["cut", "-f", "1,2,4", $dist_file],
 			       '|',
-			       [$mcl, "-", "-o", $mcl_file, "--abc", "-I", $inflation], "2>", "$mcl_file.mcl.out");
+			       [$mcl, "-",
+				"-o", $mcl_file,
+				"--abc",
+				"-I", $inflation,
+				"-te", $opt->mcl_parallel], "2>", "$mcl_file.mcl.out");
 	$ok or die "mcl failed with $?\n";
     }
     
