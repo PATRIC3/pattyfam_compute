@@ -11,7 +11,7 @@
 
 This is a pattyfam computation support routine.
 
-Compute the local family clusters using blast.
+Compute the local family clusters using blast or mmseqs.
 
 
 =cut
@@ -34,6 +34,11 @@ use LPTScheduler;
 use SeedUtils;
 
 my($opt, $usage) = describe_options("%c %o work-dir gene-names seqs-dir unclassified-proteins-file output-families",
+				    ["method" => hidden => { one_of => [
+									["mmseqs" => "Use mmseqs to build clusters", ],
+									["blast" => "Use BLAST via svr_representative_sequences to build clusters"]
+									],  default => 'mmseqs' 
+					}],
 				    ["identity|i=s" => "Identity", { default => 0.5 }],
 				    ["parallel=i" => "Parallel threads", { default => 1 }],
 				    ["help|h" => "Show this help message."]);
@@ -81,9 +86,19 @@ for my $g (keys %genomes)
 close(SEQ);
 
 my $fams_file = "$work_dir/blast.fams";
-my @cmd = ("svr_representative_sequences", "-s", $opt->identity, "-b", "-f", $fams_file);
-my $ok = run(\@cmd, "<", $seq_data, ">", "/dev/null");
-$ok or die "Failed running @cmd: $?\n";
+
+if ($opt->method eq 'blast')
+{
+    cluster_with_blast($opt->identity, $seq_data, $fams_file, $work_dir);
+}
+elsif ($opt->method eq 'mmseqs')
+{
+    cluster_with_mmseqs($opt->identity, $seq_data, $fams_file, $work_dir);
+}
+else
+{
+    die "Invalid cluster method '" . $opt->method . "'\n";
+}
 
 #
 # Read the gene names file and try to deduce gene name for local fams.
@@ -124,4 +139,44 @@ while (<B>)
 	print OUT "hypothetical protein\t$idx\t$peg\t$gene_names{$peg}\t$name\n";
     }
     $idx++;
+}
+
+sub cluster_with_mmseqs
+{
+    my($identity, $seq_data, $fams_file, $work_dir) = @_;
+    my @cmd = ("mmseqs", "easy-cluster",
+	       "--min-seq-id", $identity,
+	       "--cluster-mode", "1",
+	       $seq_data, "$work_dir/mmseqs", $ENV{TMPDIR} // "/tmp");
+    print "@cmd\n";
+    my $ok = run(\@cmd);
+    $ok or die "error running @cmd: $?\n";
+    #
+    # Compute the clusters from the mmseqs output
+    #
+
+    my %links;
+    open(my $cl, "<", "$work_dir/mmseqs_cluster.tsv") or die "Cannot open $work_dir/mmseqs_cluster.tsv: $!";
+    while (<$cl>)
+    {
+	chomp;
+	my ($id1, $id2) = split /\t/;
+	push @{$links{$id1}}, $id2;
+    }
+    open(my $out, ">", $fams_file) or die "Cannot write $fams_file: $!";
+
+    my @sets = values %links;
+    for my $set (sort { @$b <=> @$a } @sets)
+    {
+	print $out join("\t", @$set), "\n";
+    }
+    close($out);
+}
+
+sub cluster_with_blast
+{
+    my($identity, $seq_data, $fams_file) = @_;
+    my @cmd = ("svr_representative_sequences", "-s", $identity, "-b", "-f", $fams_file);
+    my $ok = run(\@cmd, "<", $seq_data, ">", "/dev/null");
+    $ok or die "Failed running @cmd: $?\n";
 }

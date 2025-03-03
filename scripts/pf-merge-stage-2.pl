@@ -16,7 +16,7 @@ use URI::Escape;
 
 my($opt, $usage) = describe_options("%c %o kmer-dir genus-dir merge-dir",
 				    ['html-dir=s', 'If specified, write HTML summaries here'],
-				    ['inflation|I=s@', 'Run MCL with this inflation parameter', { default => [2.0]} ],
+				    ['inflation|I=s', 'Run MCL with this inflation parameter', { default => [2.0]} ],
 				    ["parallel|p=i", "Run with this many procs", { default => 1 }],
 				    ["mcl-parallel|P=i", "Run with this many threads for mcl", { default => 1 }],
 				    ["mcl=s", "Use this mcl executable", { default => "mcl" }],
@@ -41,64 +41,37 @@ for my $dist (<$merge_dir/family.dist/*>)
 {
     my $f = basename($dist);
     push(@functions, $f);
-
-    #
-    # Clip the hypothetical protein group to have a minimum kmer score.
-    #
-    if (-s $dist > 2_000_000_000)
-    {
-	my $bak = "$merge_dir/dist.$f.orig";
-	if (-s $bak)
-	{
-	    print STDERR "hypo already fixed ($dist $bak)\n";
-	}
-	else
-	{
-	    print STDERR "fix up hypothetical dist file $dist => $bak\n";
-	    rename($dist, $bak) or die "cannot rename $dist to $bak: $!";
-	    open(my $old, "<", $bak) or die "Cannot open $bak: $!";
-	    open(my $new, ">", $dist) or die "Cannot open $dist: $!";
-	    while (<$old>)
-	    {
-		my($id1, $id2, $count, $score) = split(/\t/);
-		print $new $_ if $count >= 5;
-	    }
-	    close($new);
-	    close($old);
-	}
-    }
 }
 
 my @items;
-for my $inflation (@{$opt->inflation})
+my $inflation = $opt->inflation;
+
+my $mcl_dir = "$merge_dir/mcl/$inflation";
+make_path($mcl_dir);
+
+for my $dist (<$merge_dir/family.dist/*>)
 {
-    my $mcl_dir = "$merge_dir/mcl/$inflation";
-    make_path($mcl_dir);
-    
-    for my $dist (<$merge_dir/family.dist/*>)
+    my $f = basename($dist);
+    my $fn = $id_to_fn->[$f];
+    if ($fn eq 'hypothetical protein')
     {
-	my $f = basename($dist);
-	my $fn = $id_to_fn->[$f];
- 	if ($fn eq 'hypothetical protein')
+	# we will deal with these separately
+	next;
+    }
+    if (-s $dist == 0)
+    {
+	open(my $fh, ">", "$mcl_dir/$f");
+	close($fh);
+	open(my $fh, ">", "$mcl_dir/$f.mcl.out");
+	print $fh "Wrote zero length file due to zero-length input $dist\n";
+	close($fh);
+    }
+    else
+    {
+	if (! -s "$mcl_dir/$f")
 	{
- 	    # we will deal with these separately
- 	    next;
- 	}
-	if (-s $dist == 0)
-	{
-	    open(my $fh, ">", "$mcl_dir/$f");
-	    close($fh);
-	    open(my $fh, ">", "$mcl_dir/$f.mcl.out");
-	    print $fh "Wrote zero length file due to zero-length input $dist\n";
-	    close($fh);
-	}
-	else
-	{
-	    if (! -s "$mcl_dir/$f")
-	    {
-		my $item = [$f, $fn, $inflation, $dist, "$mcl_dir/$f", ($html_dir ? "$html_dir/$inflation.$f.html" : ())];
-		push(@items, [$item, -s $dist]);
-	    }
+	    my $item = [$f, $fn, $inflation, $dist, "$mcl_dir/$f", ($html_dir ? "$html_dir/$inflation.$f.html" : ())];
+	    push(@items, [$item, -s $dist]);
 	}
     }
 }
@@ -198,46 +171,20 @@ if ($html_dir)
     print I "</table>\n";
     close(I);    
 }
-
-#untie %peginfo;
 	
 sub process
 {
     my($fun, $function_name, $inflation, $dist_file, $mcl_file, $html_file) = @_;
 
     print "Process @_\n";
-    if (0)
-    {
-	my $pipe = IO::Handle->new();
-	open(my $fh, "<", $dist_file) or die "Cannot open $dist_file: $!";
-	my $h = IPC::Run::start([$mcl, "-", "-o", $mcl_file, "--abc", "-I", $inflation],
-				"<pipe", $pipe,
-				"2>", "$mcl_file.mcl.out");
-	$h or die "mcl failed with $?\n";
-	
-	while (<$fh>)
-	{
-	    chomp;
-	    my($id1, $id2, $c, $s) = split(/\t/);
-	    print $pipe "$id1\t$id2\t$s\n";
-	}
-	close($fh);
-	close($pipe);
-	my $ok = $h->finish();
-	$ok or die "mcl failed with $?\n";
-
-    }
-    else
-    {
-	my $ok = IPC::Run::run(["cut", "-f", "1,2,4", $dist_file],
-			       '|',
-			       [$mcl, "-",
-				"-o", $mcl_file,
-				"--abc",
-				"-I", $inflation,
-				"-te", $opt->mcl_parallel], "2>", "$mcl_file.mcl.out");
-	$ok or die "mcl failed with $?\n";
-    }
+    my $ok = IPC::Run::run(["cut", "-f", "1,2,4", $dist_file],
+			   '|',
+			   [$mcl, "-",
+			    "-o", $mcl_file,
+			    "--abc",
+			    "-I", $inflation,
+			    "-te", $opt->mcl_parallel], "2>", "$mcl_file.mcl.out");
+    $ok or die "mcl failed with $?\n";
     
     #
     # Postprocess to generate webpage

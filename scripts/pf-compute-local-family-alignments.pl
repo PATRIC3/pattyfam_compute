@@ -35,12 +35,18 @@ use File::Slurp;
 use File::Path qw(make_path);
 use PFLocalFamilies;
 use Cwd qw(abs_path);
+use JSON::XS;
 
 my($opt, $usage) = describe_options("%c %o genus-dir kmer-dir work-dir dest-dir",
+				    ["split-build" => "Exit after writing out work to be done"],
+				    ["split-execute" => "Run alignments from a built split"],
+				    ["skip-dna" => "Do not compute DNA alignments"],
+				    ["aligner=s" => "Aligner to use (mafft or muscle)", { default => 'mafft' }],
 				    ["dna-md5-map=s" => "Save DNA md5 mapping here"],
 				    ["max-sim=s" => "Maximium identity to retained sequences", { default => 0.8 }],
 				    ["genome-dir=s", "Directory holding PATRIC genome data", { default => "/vol/patric3/downloads/genomes" }],
 				    ["parallel|p=i" => "run this many parallel alignments", { default => 1 }],
+				    ["overload=i" => "overload factor for scheduler buckets per thread", { default => 10 }],
 				    ["help|h" => "show this help message"]);
 print($usage->text), exit 0 if $opt->help;
 die($usage->text) unless @ARGV == 4;
@@ -52,11 +58,15 @@ my $kmer_dir = shift;
 my $work_dir = shift;
 my $dest_dir = shift;
 
-my($function_to_index, $index_to_function) = read_function_index($kmer_dir);
+my $json = JSON::XS->new->pretty();
 
 my $genus = basename(abs_path($dir));
 
-my $local_families = PFLocalFamilies->load($dir);
+my $local_families;
+if (!$opt->split_execute)
+{
+    $local_families = PFLocalFamilies->load($dir);
+}
 
 -d $dest_dir or die "Destination dir $dest_dir does not exist\n";
 
@@ -81,146 +91,208 @@ while (<G>)
 close(G);
 
 my $bootstrap = sub {
-    my $p = P3AlignmentComputeToDisk->new($work_dir);
+    print STDERR "Boot up $$\n";
+    my $p = P3AlignmentComputeToDisk->new($work_dir, aligner => $opt->aligner);
     return $p;
 };
 
-open(FAM, "<", "$dir/local.family.members") or die "$dir/local.family.members does not exist\n";
+my $sched = LPTScheduler->new($opt->parallel * $opt->overload);
+my @to_write;
+my @work_index;
 
-#
-# %fidfam maps from genome id to a hash mapping from feature id to the containing family
-#
-my %fidfam;
-my $last;
-my %fam_aa_data;
-my %fam_na_data;
-my %fam_size;
-my %fam_aa_size;
-my %fam_na_md5;
-
-while (<FAM>)
+if ($opt->split_execute)
 {
-    chomp;
-    my($lid, $fid) = split(/\t/);
-    my($g) = $fid =~ /^fig\|(\d+\.\d+)\./;
-    $fidfam{$g}->{$fid} = $lid;
-    $fam_size{$lid}++;
-    if ($lid ne $last)
+    my $tmp = $json->decode(scalar read_file("$work_dir/to_write.json"));
+    @to_write = @$tmp;
+    my $work = $json->decode(scalar read_file("$work_dir/work.json"));
+    $work or die "Could not read $work_dir/work.json: $!";
+
+    my $idir = "$work_dir/items";
+    for my $ent (@$work)
     {
-	if (defined($last) && $fam_size{$last} > 1)
-	{
-	    my $fa = '';
-	    my $na = '';
-	    $fam_aa_data{$last} = \$fa;
-	    $fam_na_data{$last} = \$na;
-	}
-	$last = $lid;
+	my($idx, $fam, $type, $genus, $gc, $cost) = @$ent;
+	$sched->add_work([$fam, { file => "$idir/$idx" }, $type, $genus, $gc], $cost);
     }
-}
-if (defined($last) && $fam_size{$last} > 1)
-{
-    my $fa = '';
-    my $na = '';
-    $fam_aa_data{$last} = \$fa;
-    $fam_na_data{$last} = \$na;
-}
-
-my $map;
-if ($opt->dna_md5_map)
-{
-    $map = IO::File->new($opt->dna_md5_map, ">");
-}
-
-my @genomes = sort keys %fidfam;
-
-my $genetic_code = 11;
-my @qry;
-if ($genus_tax_id)
-{
-    @qry = (["eq", "taxon_id", $genus_tax_id]);
-
 }
 else
 {
-    @qry = (["eq", "taxon_rank", "genus"], ["eq", "taxon_name", $genus]);
-}
-my @res = $api->query("taxonomy", @qry, ["select", "taxon_name,taxon_id,genetic_code"]);
-print STDERR  "Genus tax data for '$genus': " . Dumper(\@res);
-if (@res)
-{
-    $genetic_code = $res[0]->{genetic_code};
-}
-
-#
-# Read fasta data into memory on a per-family basis
-#
-for my $g (@genomes)
-{
-    my $fidh = $fidfam{$g};
-    if (open(S, "<", "$dir/nr-seqs/$g"))
+    my($function_to_index, $index_to_function) = read_function_index($kmer_dir);
+    
+    open(FAM, "<", "$dir/local.family.members") or die "$dir/local.family.members does not exist\n";
+    
+    #
+    # %fidfam maps from genome id to a hash mapping from feature id to the containing family
+    #
+    my %fidfam;
+    my $last;
+    my %fam_aa_data;
+    my %fam_na_data;
+    my %fam_size;
+    my %fam_aa_size;
+    my %fam_na_md5;
+    
+    while (<FAM>)
     {
-	my $inref;
-	while (<S>)
+	chomp;
+	my($lid, $fid) = split(/\t/);
+	my($g) = $fid =~ /^fig\|(\d+\.\d+)\./;
+	$fidfam{$g}->{$fid} = $lid;
+	$fam_size{$lid}++;
+	if ($lid ne $last)
 	{
-	    if (/^>(\S+)/)
+	    if (defined($last) && $fam_size{$last} > 1)
 	    {
-		if (defined(my $fam = $fidh->{$1}))
-		{
-		    $fam_aa_size{$fam}++;
-		    $inref = $fam_aa_data{$fam};
-		    $$inref .= $_ if $inref;
-		}
-		else
-		{
-		    undef $inref;
-		}
+		my $fa = '';
+		my $na = '';
+		$fam_aa_data{$last} = \$fa;
+		$fam_na_data{$last} = \$na;
 	    }
-	    elsif ($inref)
-	    {
-		$$inref .= $_;
-	    }
+	    $last = $lid;
 	}
-	close(S);
     }
-    #
-    # First try to load from nr-seq-dna data.
-    #
-    my $nr_seq_dna = "$dir/nr-seqs-dna/$g";
-    my $gfna = $opt->genome_dir . "/$g/$g.PATRIC.ffn";
-    my $opened;
-
-    if (open(S, "<", $nr_seq_dna))
+    if (defined($last) && $fam_size{$last} > 1)
     {
-	$opened++;
+	my $fa = '';
+	my $na = '';
+	$fam_aa_data{$last} = \$fa;
+	$fam_na_data{$last} = \$na;
+    }
+    
+    my $map;
+    if ($opt->dna_md5_map)
+    {
+	$map = IO::File->new($opt->dna_md5_map, ">");
+    }
+    
+    my @genomes = sort keys %fidfam;
+    
+    my $genetic_code = 11;
+    my @qry;
+    if ($genus_tax_id)
+    {
+	@qry = (["eq", "taxon_id", $genus_tax_id]);
+	
     }
     else
     {
-	warn "$nr_seq_dna missing, trying $gfna\n";
-	if (open(S, "<", $gfna))
-	{
-	    $opened++;
-	}
-	else
-	{
-	    warn "No DNA found\n";
-	}
+	@qry = (["eq", "taxon_rank", "genus"], ["eq", "taxon_name", $genus]);
     }
-    if ($opened)
+    my @res = $api->query("taxonomy", @qry, ["select", "taxon_name,taxon_id,genetic_code"]);
+    print STDERR  "Genus tax data for '$genus': " . Dumper(\@res);
+    if (@res)
     {
-	my $inref;
-	my $digest;
-	my $dna;
-	my $id;
-	my $fam;
-	while (<S>)
+	$genetic_code = $res[0]->{genetic_code};
+    }
+    
+    #
+    # Read fasta data into memory on a per-family basis
+    #
+    for my $g (@genomes)
+    {
+	my $fidh = $fidfam{$g};
+	if (open(S, "<", "$dir/nr-seqs/$g"))
 	{
-	    if (/^>(fig\|\d+\.\d+\.[^.]+\.\d+)/)
+	    my $inref;
+	    while (<S>)
 	    {
-		my $new_id = $1;
+		if (/^>(\S+)/)
+		{
+		    if (defined(my $fam = $fidh->{$1}))
+		    {
+			$fam_aa_size{$fam}++;
+			$inref = $fam_aa_data{$fam};
+			$$inref .= $_ if $inref;
+		    }
+		    else
+		    {
+			undef $inref;
+		    }
+		}
+		elsif ($inref)
+		{
+		    $$inref .= $_;
+		}
+	    }
+	    close(S);
+	}
+	if (!$opt->skip_dna)
+	{
+	    #
+	    # First try to load from nr-seq-dna data.
+	    #
+	    my $nr_seq_dna = "$dir/nr-seqs-dna/$g";
+	    my $gfna = $opt->genome_dir . "/$g/$g.PATRIC.ffn";
+	    my $opened;
+	    
+	    if (open(S, "<", $nr_seq_dna))
+	    {
+		$opened++;
+	    }
+	    else
+	    {
+		warn "$nr_seq_dna missing, trying $gfna\n";
+		if (open(S, "<", $gfna))
+		{
+		    $opened++;
+		}
+		else
+		{
+		    warn "No DNA found\n";
+		}
+	    }
+	    if ($opened)
+	    {
+		my $inref;
+		my $digest;
+		my $dna;
+		my $id;
+		my $fam;
+		while (<S>)
+		{
+		    if (/^>(fig\|\d+\.\d+\.[^.]+\.\d+)/)
+		    {
+			my $new_id = $1;
+			
+			#
+			# process last fam if we were in one.
+			#
+			if ($inref)
+			{
+			    my $md5 = $digest->hexdigest();
+			    print $map "$id\t$md5\n" if $map;
+			    if (!$fam_na_md5{$fam}->{$md5})
+			    {
+				$fam_na_md5{$fam}->{$md5} = 1;
+				$$inref .= ">$id\n$dna";
+				undef $dna;
+			    }
+			}
+			
+			$id = $new_id;
+			$fam = $fidh->{$id};
+			
+			#
+			# Now start new seq processing.
+			#
+			$inref = $fam_na_data{$fam};		
+			if ($inref)
+			{
+			    $digest = Digest::MD5->new();
+			    $dna = '';
+			}
+		    }
+		    else
+		    {
+			if ($inref)
+			{
+			    s/\s//g;
+			    next if $_ eq '';
+			    $digest->add(uc($_));
+			    $dna .= $_ . "\n";
+			}
+		    }
+		}
 		
-		#
-		# process last fam if we were in one.
-		#
 		if ($inref)
 		{
 		    my $md5 = $digest->hexdigest();
@@ -228,92 +300,96 @@ for my $g (@genomes)
 		    if (!$fam_na_md5{$fam}->{$md5})
 		    {
 			$fam_na_md5{$fam}->{$md5} = 1;
-			$$inref .= ">$id\n$dna";
+			$$inref .= ">$id\n$dna\n";
 			undef $dna;
 		    }
 		}
-
-		$id = $new_id;
-		$fam = $fidh->{$id};
-
-		#
-		# Now start new seq processing.
-		#
-		$inref = $fam_na_data{$fam};		
-		if ($inref)
-		{
-		    $digest = Digest::MD5->new();
-		    $dna = '';
-		}
-	    }
-	    else
-	    {
-		if ($inref)
-		{
-		    s/\s//g;
-		    next if $_ eq '';
-		    $digest->add(uc($_));
-		    $dna .= $_ . "\n";
-		}
+		
+		close(S);
 	    }
 	}
-
-	if ($inref)
+    }
+    close($map) if $map;
+    
+    for my $k (keys %fam_aa_size)
+    {
+	if ($fam_aa_size{$k} <= 1)
 	{
-	    my $md5 = $digest->hexdigest();
-	    print $map "$id\t$md5\n" if $map;
-	    if (!$fam_na_md5{$fam}->{$md5})
-	    {
-		$fam_na_md5{$fam}->{$md5} = 1;
-		$$inref .= ">$id\n$dna\n";
-		undef $dna;
-	    }
+	    # print "Remove fam $k size=$fam_aa_size{$k}\n";
+	    delete $fam_aa_data{$k};
 	}
-	
-	close(S);
     }
-}
-close($map) if $map;
-
-for my $k (keys %fam_aa_size)
-{
-    if ($fam_aa_size{$k} <= 1)
+    
+    while (my($k, $h) = each %fam_na_md5)
     {
-	# print "Remove fam $k size=$fam_aa_size{$k}\n";
-	delete $fam_aa_data{$k};
+	if (keys %$h <= 1)
+	{
+	    # print "Remove fam $k from dna\n";
+	    delete $fam_na_data{$k};
+	}
     }
-}
-while (my($k, $h) = each %fam_na_md5)
-{
-    if (keys %$h <= 1)
+
+    my %fams_to_compute;
+    
+    if ($opt->split_build)
     {
-	# print "Remove fam $k from dna\n";
-	delete $fam_na_data{$k};
+	make_path("$work_dir/items");
     }
-}
+    
+    
+    while (my($fam, $seqp) = each %fam_aa_data)
+    {
+	$fams_to_compute{$fam} = 1;
+	my $cost = length($$seqp);
+	$cost = 5000 if $cost < 5000;
+	add_work($fam, $seqp, 'aa', $genus, $genetic_code, $cost);
+    }
+    
+    if (!$opt->skip_dna)
+    {
+	while (my($fam, $seqp) = each %fam_na_data)
+	{
+	    $fams_to_compute{$fam} = 1;
+	    my $cost = length($$seqp);
+	    $cost = 5000 if $cost < 5000;
+	    add_work($fam,  $seqp, 'dna', $genus, $genetic_code, $cost);
+	}
+    }
 
-my $sched = LPTScheduler->new($opt->parallel * 10);
-
-my %fams_to_compute;
-
-
-while (my($fam, $seqp) = each %fam_aa_data)
-{
-    $fams_to_compute{$fam} = 1;
-    my $cost = length($$seqp);
-    $cost = 5000 if $cost < 5000;
-    $sched->add_work([$fam, $seqp, 'aa', $genus, $genetic_code], $cost);
-}
-
-while (my($fam, $seqp) = each %fam_na_data)
-{
-    $fams_to_compute{$fam} = 1;
-    my $cost = length($$seqp);
-    $cost = 5000 if $cost < 5000;
-    $sched->add_work([$fam, $seqp, 'dna', $genus, $genetic_code], $cost);
+    #
+    # Note the function index for the family so we can sort into blocks with the same function
+    # index to efficiently write our family.fasta data
+    #
+    @to_write = sort { $a->[1] <=> $b->[1] } map { [$_, $function_to_index->{$local_families->family($_)->function} ] } keys %fams_to_compute;
+    
+    #
+    # Save index to the workdir and exit.
+    #
+    
+    if ($opt->split_build)
+    {
+	write_file("$work_dir/work.json", $json->encode(\@work_index));
+	write_file("$work_dir/to_write.json", $json->encode(\@to_write));
+	exit;
+    }
+    
+    for my $ftc (keys %fams_to_compute)
+    {
+	my $func = $local_families->family($ftc)->function;
+	my $idx = $function_to_index->{$func};
+	if (!defined($idx))
+	{
+	    print STDERR "No index defined: " . Dumper($ftc, $func, $idx);
+	}
+    }
 }
 
 $sched->run($bootstrap, \&align_one, $opt->parallel);
+
+if (!$local_families)
+{
+    $local_families = PFLocalFamilies->load($dir);
+}
 
 #
 # When alignments are complete, roll the stats, reps and alignments up into btree databases.
@@ -321,11 +397,6 @@ $sched->run($bootstrap, \&align_one, $opt->parallel);
 
 open(PM, ">", "$dir/peg.map") or die "Cannot write $dir/peg.map: $!";
 
-#
-# Note the function index for the family so we can sort into blocks with the same function
-# index to efficiently write our family.fasta data
-#
-my @to_write = sort { $a->[1] <=> $b->[1] } map { [$_, $function_to_index->{$local_families->family($_)->function} ] } keys %fams_to_compute;
 
 my $func_dir = "$dir/fasta_by_function";
 make_path($func_dir);
@@ -422,6 +493,28 @@ for my $type ('aa', 'dna')
 }
 close(PM);
 
+
+#
+# Add some work. If we're directly computing, add to the sched.
+# Otherwise write out.
+#
+sub add_work
+{
+    my($fam, $seqp, $type, $genus, $gc, $cost) = @_;
+    if ($opt->split_build)
+    {
+	my $idx = @work_index;
+	write_file("$work_dir/items/$idx", $$seqp);
+	push(@work_index, [$idx, $fam, $type, $genus, $gc, $cost]);
+    }
+    else
+    {
+	$sched->add_work([$fam, $seqp, $type, $genus, $gc], $cost);
+#	$sched->add_work([$fam, { seqp => $seqp }, $type, $genus, $gc], $cost);
+    }
+}
+
+
 #
 # Load data file into btree.
 #
@@ -435,7 +528,7 @@ sub load
     }
     else
     {
-	warn "Cannot open $work_dir/$fam/$file: $!";
+	# warn "Cannot open $work_dir/$fam/$file: $!";
     }
 }
 
@@ -444,10 +537,31 @@ sub align_one
     my($p3align, $work) = @_;
     my($key, $seqp, $tag, $genus, $genetic_code) = @$work;
 
-    open(STR, "<", $seqp);
-    my @data = read_fasta(\*STR);
-    close(STR);
+#    print Dumper($work);
 
+    my $fh;
+    if (ref($seqp) eq 'SCALAR')
+    {
+	open($fh, "<", $seqp) or die "Cannot open seq: $!";
+    }
+    elsif (my $v = $seqp->{seq})
+    {
+	open($fh, "<", \$v) or die "Cannot open seq: $!";
+    }
+    elsif (my $v = $seqp->{seqp})
+    {
+	open($fh, "<", $v) or die "Cannot open seqp: $!";
+    }
+    elsif (my $v = $seqp->{file})
+    {
+	open($fh, "<", $v) or die "Cannot open file: $!";
+    }
+    else
+    {
+	die "Invalid seqp $seqp";
+    }
+    my @data = read_fasta($fh);
+    close(STR);
     $p3align->process_data($genus, $key, \@data, $tag, $genetic_code);
 }
 
@@ -467,6 +581,12 @@ sub read_function_index
 	$from_id->[$i] = $fun;
     }
     close(F);
+    my $hypo = 'hypothetical protein';
+    if (!$idx->{$hypo})
+    {
+	$idx->{$hypo} = 4294967295;
+	$from_id->[4294967295] = $hypo;
+    }
     
     return($idx, $from_id);
 }

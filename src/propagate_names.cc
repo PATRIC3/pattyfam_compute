@@ -250,6 +250,10 @@ void RenumberState::phase_1_body(const std::string &fam, std::set<std::string> &
     std::set<std::string> nfam_checked;
     std::map<std::string, int> nfam_count;
     int bad = 0;
+
+    /*
+     * fids is the set of proteins in the old family named by fam
+     */
     
     for (auto peg: fids)
     {
@@ -811,5 +815,5 @@ int main(int argc, char* argv[])
 
     if (log_file != "")
 	renumber.stop_logger();
-	
+    _exit(0);
 }

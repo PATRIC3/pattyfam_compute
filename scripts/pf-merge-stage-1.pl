@@ -21,9 +21,11 @@
 
 use DBI;
 use strict;
+use Cwd qw(abs_path);
 use Data::Dumper;
 use Getopt::Long::Descriptive;
 use IO::Handle;
+use JSON::XS;
 use File::Path 'make_path';
 use File::Copy;
 use File::Slurp;
@@ -35,18 +37,23 @@ use POSIX ':sys_wait_h';
 use IPC::Run;
 use LPTScheduler;
 use List::Util qw(max min reduce);
+use Time::HiRes qw(gettimeofday);
 
-my($opt, $usage) = describe_options("%c %o kmer-dir merge-dir famdir famdir [famdir ...]",
+my($opt, $usage) = describe_options("%c %o kmer-dir merge-dir [famdir ...]",
+				    ["save-work=s", "Instead of running the compute, save the work to the given file"],
+				    ["family-dir-base=s", "If set, prepend this to the files in --family-dir-file"],
+				    ["family-dir-file=s", "Read this file to get the list of family directories"],
+				    ['inflation|I=s', 'Run MCL with this inflation parameter', { default => 2.0 } ],
 				    ['subsystem=s@', "Merge roles that occur in this subsystem only", { default => [] }],
 				    ["parallel|p=i", "Number of jobs to run in parallel", { default => 1 }],
+				    ["kmer-parallel=i", "Number of threads to assign to kmer processing", { default => 1 }],
 				    ["serial", "Force serial execution"],
-				    ["kser=s" => "Path to kser executable", { default => "/home/olson/P3/close_kmers/kser" }],
 				    ["log|l=s", "Trace logfile"],
 				    ["dist-dir=s", "Directory into which distances are written"],
 				    ["help|h", "Show this help message"]);
 
 print($usage->text), exit if $opt->help;
-die($usage->text) if @ARGV < 4;
+die($usage->text) if @ARGV < 2;
 
 if ($opt->log)
 {
@@ -60,7 +67,35 @@ else
 
 my $kmer_dir = shift;
 my $merge_dir = shift;
-my @fam_dirs = @ARGV;
+
+my @fam_dirs;
+
+if ($opt->family_dir_file)
+{
+    @fam_dirs = read_file($opt->family_dir_file);
+    chomp @fam_dirs;
+    if ($opt->family_dir_base)
+    {
+	my $base = $opt->family_dir_base;
+	s,^,$base/,g foreach @fam_dirs;
+    }
+}
+else
+{
+    @fam_dirs = @ARGV;
+}
+
+for my $dir (@fam_dirs)
+{
+    if (! -d $dir)
+    {
+	die "Family directory $dir does not exist\n";
+    }
+    if (! -d "$dir/fasta_by_function")
+    {
+	die "Family directory $dir is missing fasta_by_function\n";
+    }
+}
 
 my %desired_roles;
 my($function_to_index, $index_to_function) = read_function_index($kmer_dir);
@@ -127,6 +162,22 @@ my $sched = LPTScheduler->new($opt->parallel);
 
 $sched->add_work([$_, $fn_list{$_}], $fn_size{$_}) foreach keys %fn_size;
 
+if ($opt->save_work)
+{
+    my @bins = $sched->compute_order();
+    my $dat = {
+	bins => \@bins,
+	dist_dir => abs_path($dist_dir),
+	kmer_dir => abs_path($kmer_dir),
+	merge_dir => abs_path($merge_dir),
+	inflation => $opt->inflation,
+    };
+    open(F, ">", $opt->save_work) or die "Cannot write " . $opt->save_work . ": $!";
+    print F JSON::XS->new->pretty->canonical->encode($dat);
+    close(F);
+    exit 0;
+}
+
 $sched->run(sub {}, \&do_work);
 
 sub do_work
@@ -135,52 +186,27 @@ sub do_work
     my($fn, $fa_list) = @$item;
     print "$$ $fn: @$fa_list\n";
 
-    my($kser_pid, $kser_port) = start_kser($tmpdir, $kmer_dir);
-    
-    my $add_url = "http://localhost:$kser_port/add";
-    my $matrix_url = "http://localhost:$kser_port/matrix";
-    print "curl to $add_url\n";
-    
-    $SIG{__DIE__} = sub {
-	kill 1, $kser_pid;
-    };
+    my $t1 = gettimeofday;
 
-    for my $fa_file (@$fa_list)
-    {
-	print "Add $fa_file\n";
-	my $calls_out = "/dev/null"; # don't need this data
+    my @cmd = ("kmers-matrix-distance-files",
+	       "--n-threads", $opt->kmer_parallel,
+	       "--min-kmers-in-common", 5,
+	       $kmer_dir,
+	       "$dist_dir/$fn",
+	       @$fa_list);
+    print STDERR "Run @cmd\n";
+    my $rc = system(@cmd);
 
-	my $rc = system("curl", "-s", "-S", "-o", $calls_out, "-H", "kmer-options: -a -d 1", "--data-binary", "\@$fa_file", $add_url);
-	if ($rc != 0)
-	{
-	    die "Error loading fasta data\n";
-	}
-	print "Done\n";
-    }
+    my $t2 = gettimeofday;
+    my $elap = $t2 - $t1;
+    my $sz = 0;
+    $sz += -s $_ foreach @$fa_list;
+    print join("\t", "ITEM", $fn, $sz, $elap), "\n";
 
-    my $pipe = IO::Handle->new();
-    my @cmd = ("kmer_guts_net", "-u", $matrix_url, "-d", 1, "-a");
-    my $h = IPC::Run::start(\@cmd,
-			    '<pipe', $pipe,
-			    '>', "$dist_dir/$fn");
-    $h or die "Could not start @cmd: $?\n";
-    for my $fa_file (@$fa_list)
+    if ($rc != 0)
     {
-	print "Send $fa_file to pipe\n";
-	copy($fa_file, $pipe);
+	die "Failure $rc running @cmd\n";
     }
-    close($pipe);
-    my $ok = $h->finish();
-    if (!$ok)
-    {
-	die "Failed @cmd < [fa_files] > $dist_dir/$fn\n";
-    }
-    
-    print "Killing $kser_pid\n";
-    kill 1, $kser_pid;
-    print "Waiting on $kser_pid\n";
-    waitpid $kser_pid, 0;
-    print "Done waiting\n";
 }
 
 sub read_function_index
@@ -203,67 +229,6 @@ sub read_function_index
     return($idx, $from_id);
 }
 
-sub start_servers
-{
-    my($tmpdir, $dataD) = @_;
-
-    my($kser_pid, $kser_port) = start_kser($tmpdir, $dataD);
-    
-    return ($kser_pid, $kser_port);
-}
-
-sub start_kser
-{
-    my($tmpdir, $dataD) = @_;
-    
-    #
-    # Start the stateful kmer server
-    #
-    
-    my $kser_port_file = "$tmpdir/kser_port.$$";
-    my @kser_cmd = ($opt->{kser},
-		    "--listen-port-file", $kser_port_file, 0, $dataD);
-    unlink($kser_port_file);
-    
-    my $kser_pid = fork;
-    if (!defined($kser_pid))
-    {
-	die "fork failed: $!";
-    }
-    if ($kser_pid == 0)
-    {
-	print "Starting kser_cmd in $$: @kser_cmd\n";
-	exec(@kser_cmd);
-	die "Kser did not start $?: @kser_cmd\n";
-    }
-    
-    my $kser_port;
-    while (1)
-    {
-	my $kid = waitpid($kser_pid, WNOHANG);
-	if ($kid)
-	{
-	    die "kser server did not start\n";
-	}
-	if (-s $kser_port_file)
-	{
-	    $kser_port = read_file($kser_port_file);
-	    chomp $kser_port;
-	    if ($kser_port !~ /^\d+$/)
-	    {
-		kill(1, $kser_pid);
-		kill(9, $kser_pid);
-		die "Invalid kser port '$kser_port'\n";
-	    }
-	    last;
-	}
-	sleep(0.1);
-    }
-    
-    print "Kser running pid $kser_pid on port $kser_port\n";
-    
-    return ($kser_pid, $kser_port);
-}
 
 
 

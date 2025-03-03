@@ -27,6 +27,11 @@ my($opt, $usage) = describe_options("%c %o [log-files] ::: [family-files]",
 print($usage->text), exit 1 if $opt->help;
 die($usage->text) if @ARGV < 3 || !$opt->max_id_file;
 
+if ($opt->output_directory && ! -d $opt->output_directory)
+{
+    die "Output directory " . $opt->output_directory . " does not exist\n";
+}
+
 my %genus_map;
 
 if ($opt->genus_map)
@@ -153,7 +158,12 @@ sub process_fam_file
 
 	my $ngf = $gf_id_map->{$gf};
 	my $nlf = $lf_id_map->{$lf};
-	$ngf or die "Cannot map $gf\n";
+	# $ngf or die "Cannot map $gf\n";
+	if (!$ngf)
+	{
+	    warn "Cannot map $gf\n";
+	    next;
+	}
 
 	#
 	# If there is no local family mapping, see if this is a new genus.
@@ -162,7 +172,7 @@ sub process_fam_file
 	# the newly created ID from the incoming family file.
 	#
 
-	if (!$nlf)
+	if (!defined($nlf))
 	{
 	    if (exists($next_id->{$genus}))
 	    {

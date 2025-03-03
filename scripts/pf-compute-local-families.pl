@@ -29,14 +29,22 @@ use Data::Dumper;
 
 my($opt, $usage) = describe_options("%c %o kmer-dir genus-data-dir",
 				    ["logfile|l=s" => "Log file"],
+				    ["blast-method" => hidden => { one_of => [
+									["mmseqs" => "Use mmseqs to build non-kmer clusters", ],
+									["blast" => "Use BLAST via svr_representative_sequences to build non-kmer clusters"]
+									],  default => 'mmseqs' 
+					}],
+				    ["alignment-method" => hidden => { one_of => [
+									["muscle" => "Use muscle to compute local family alignments", ],
+									["mafft" => "Use mafft to compute local family alignments", ],
+									],  default => 'mafft' 
+					}],
 				    ["identity=s" => "Identity for BLAST fallback", { default => 0.5 }],
 				    ["inflation=s" => "MCL inflation", { default => 3.0 }],
 				    ["good-cutoff=s" => "Fraction of members with unique genomes required to be 'good'", { default => 0.9 }],
 				    ["parallel=i" => "Parallel threads", { default => 1 }],
 				    ["tmpdir=s" => "Temp dir"],
 				    ["genome-dir=s", "Directory holding PATRIC genome data", { default => "/vol/patric3/downloads/genomes" }],
-			    ["kser=s" => "Path to kser executable", { default => "kser" }],
-
 				    ["help|h" => "Show this help message."]);
 print($usage->text), exit 0 if $opt->help;
 die($usage->text) if @ARGV != 2;
@@ -134,8 +142,8 @@ my $uncalled_ids_file = "$tmpdir/missed";
 
 my @anno_cmd = ('kmers-annotate-seqs',
 		"--parallel", $opt->parallel,
-		"--truncated-pegs", "$fam_dir/truncated.genes",
-		$add_url, $fam_dir, $seqs_dir, $calls_file, $uncalled_ids_file);
+#		"--truncated-pegs", "$fam_dir/truncated.genes",
+		$kmer_dir, $fam_dir, $seqs_dir, $calls_file, $uncalled_ids_file);
 
 print "@anno_cmd\n";
 my $rc = system(@anno_cmd);
@@ -144,7 +152,7 @@ my $tend = gettimeofday;
 my $elap = $tend - $tstart;
 print LOG "finish kmers-annotate-seqs $tend $elap\n";
 
-$rc == 0 or die "annotation failed with $rc: @anno_cmd\n";
+$rc == 0 or die "annotation failed with $rc: " . Dumper(@anno_cmd);
 
 #
 # Compute kmer distances.
@@ -157,6 +165,7 @@ my $cmd = ["pf-compute-kmer-distances",
 	   "--parallel", $opt->parallel,
 #	   "--remove-truncated-threshold", 1000,
 	   "--truncated-pegs", "$fam_dir/truncated.genes",
+	   "--kmer-stats", "$fam_dir/kmer.stats",
 	   $kmer_dir, $seqs_dir,
 	   $calls_file, $uncalled_ids_file,
 	   $work_dir];
@@ -191,10 +200,13 @@ print LOG "finish pf-compute-kmer-clusters $tend $elap\n";
 my $tstart = gettimeofday;
 print LOG "start pf-compute-blast-clusters $tstart\n";
 
+my $method = "--" . $opt->blast_method;
+
 if (-s "$fam_dir/unclassified")
 {
     my $cmd = ["pf-compute-blast-clusters",
 	       "--parallel", $opt->parallel,
+	       $method,
 	       $work_dir, "$fam_dir/gene.names", "$fam_dir/nr-seqs",
 	       "$fam_dir/unclassified", "$fam_dir/blast.clusters"];
     print STDERR "Run: @$cmd\n";
@@ -321,8 +333,16 @@ my $tstart = gettimeofday;
 print LOG "start pf-compute-local-family-alignments.pl $tstart\n";
 
 run(["pf-compute-local-family-alignments",
+     "--aligner", $opt->alignment_method,
      "--genome-dir", $opt->genome_dir,
      "--parallel", $opt->parallel,
+     "--split-build",
+     $fam_dir, $kmer_dir, $align_work_dir, $fam_dir]);
+
+run(["pf-compute-local-family-alignments",
+     "--genome-dir", $opt->genome_dir,
+     "--parallel", $opt->parallel,
+     "--split-execute",
      $fam_dir, $kmer_dir, $align_work_dir, $fam_dir]);
 
 my $tend = gettimeofday;

@@ -28,6 +28,7 @@ sub new
 	json => JSON::XS->new->pretty(1),
 	%params,
     };
+    $self->{aligner} //= 'mafft';
     return bless $self, $class;
 }
 
@@ -139,37 +140,71 @@ sub process_data
     }
     else
     {
-	my $to_mafft = IO::Handle->new;
-	my($mafft_out, $mafft_err);
+	my @cmd;
+	
 	my $t1 = gettimeofday;
-	my $h = IPC::Run::start(["mafft", "--reorder", "--anysymbol", "-"],
-				"<pipe", $to_mafft,
-				">", \$mafft_out,
-				"2>", \$mafft_err,
-				IPC::Run::timeout(1800),
-			       );
-	$to_mafft->blocking(1);
-	for my $ent (@ali3)
+	my($mafft_out, $mafft_err);
+	my $h;
+	if ($self->{aligner} eq 'mafft')
 	{
-	    my($id, $def, $seq) = @$ent;
-	    my $rc = print $to_mafft ">$id $def\n" . pack_seq($seq)  . "\n";
-	    if (!$rc)
-	    {
-		$rc or die "failed $!";
-	    }
+	    @cmd = ('mafft', "--reorder", "--anysymbol", "-");
 	}
-	close($to_mafft) or die "close failed: $!";
+	elsif ($self->{aligner} eq 'muscle')
+	{
+	    @cmd = ('muscle', '-in', '-');
+	}
 
 	my $ok;
-	eval {
-	    $ok = $h->finish();
-	};
+	if (0)
+	{
+	    # Orig method
 
+	    my $to_mafft = IO::Handle->new;
+	    
+	    $h = IPC::Run::start(\@cmd,
+				 "<pipe", $to_mafft,
+				 ">", \$mafft_out,
+				 "2>", \$mafft_err,
+				 IPC::Run::timeout(1800),
+				);
+	    $to_mafft->blocking(1);
+	    
+	    for my $ent (@ali3)
+	    {
+		my($id, $def, $seq) = @$ent;
+		my $rc = print $to_mafft ">$id $def\n" . pack_seq($seq)  . "\n";
+		if (!$rc)
+		{
+		    $rc or die "failed $!";
+		}
+	    }
+	    close($to_mafft) or die "close failed: $!";
+	    
+	    eval {
+		$ok = $h->finish();
+	    };
+	}
+	else
+	{
+	    my $inp = '';
+	    for my $ent (@ali3)
+	    {
+		my($id, $def, $seq) = @$ent;
+		$inp .= ">$id $def\n" . pack_seq($seq) . "\n";
+	    }
+
+	    $ok = IPC::Run::run(\@cmd,
+				   "<", \$inp,
+				   ">", \$mafft_out,
+				   "2>", \$mafft_err,
+				   IPC::Run::timeout(1800));
+	}
+	
 	if ($@ || !$ok)
 	{
-	    my $msg = $@ ? $@ : "mafft failed: $mafft_err";
-	    print STDERR "Mafft failed for genus $genus family $family: $msg\n";
-	    $self->write_stats({ error => "mafft failed: $msg" }, $seq_type, $fam_dir);
+	    my $msg = $@ ? $@ : "@cmd failed: $mafft_err";
+	    print STDERR "@cmd failed for genus $genus family $family: $msg\n";
+	    $self->write_stats({ error => "@cmd failed: $msg" }, $seq_type, $fam_dir);
 	    return;
 	}
 	

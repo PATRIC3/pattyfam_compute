@@ -46,6 +46,8 @@ my($opt, $usage) = describe_options("%c %o kmer-dir data-dir",
 print($usage->text), exit if $opt->help;
 die($usage->text) if @ARGV != 2;
 
+my $coreseed = "/coreseed";
+
 my $kmer_dir = shift;
 my $base_data_dir = shift;
 
@@ -57,8 +59,8 @@ my $json = JSON::XS->new->pretty(1);
 # Fill in required data from kmer build dir.
 #
 my $genus = "core";
-opendir(D, "$kmer_dir/Seqs") or die "cannot open $kmer_dir/Seqs: $!";
-my $genome_ids = [sort grep { -f "$kmer_dir/Seqs/$_" && /^\d+\.\d+$/ } readdir(D)];
+opendir(D, "$kmer_dir/fasta") or die "cannot open $kmer_dir/fasta: $!";
+my $genome_ids = [sort grep { -f "$kmer_dir/fasta/$_" && /^\d+\.\d+$/ } readdir(D)];
 closedir(D);
 @$genome_ids or die "Did not properly read genome ids";
 
@@ -74,9 +76,9 @@ for my $gid (@$genome_ids)
     {
 	$gnames->{$gid} = $n1->{$gid}->[0];
     }
-    elsif (-f "/vol/core-seed/FIGdisk/FIG/Data/Organisms/$gid/GENOME")
+    elsif (-f "$coreseed/FIGdisk/FIG/Data/Organisms/$gid/GENOME")
     {
-	$gnames->{$gid} = read_file("/vol/core-seed/FIGdisk/FIG/Data/Organisms/$gid/GENOME");
+	$gnames->{$gid} = read_file("$coreseed/FIGdisk/FIG/Data/Organisms/$gid/GENOME");
     }
     else
     {
@@ -123,7 +125,7 @@ if (1)
     my @missed;
     for my $gid (@$genome_ids)
     {
-	my $prots = "$kmer_dir/Seqs/$gid";
+	my $prots = "$kmer_dir/fasta/$gid";
 	if (open(P, "<", $prots))
 	{
 	    open(SEQS, ">", "$seqs_dir/$gid") or die "Cannot write $seqs_dir/$gid: $!";

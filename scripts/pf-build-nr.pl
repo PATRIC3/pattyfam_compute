@@ -33,7 +33,8 @@ use gjoseqlib;
 use Digest::MD5 'md5_hex';
 
 my($opt, $usage) = describe_options("%c %o SourcesInFile NR PEGsynonyms nr-len-btree fig-ids",
-#				    ["index=s", "Create indexed peg synonyms in file.t and file.f"],
+				    #				    ["index=s", "Create indexed peg synonyms in file.t and file.f"],
+				    ["parallel|p=i", "Run sort with this many threads", { default => 2 }],
 				    ["exclude=s", "Exclude ids from the given peg.synonyms file"],
 				    ["help|h", "Show help message"]);
 
@@ -100,10 +101,8 @@ if ($opt->exclude)
 my $seq_count = 0;
 
 open(NR, ">", $nrF) or die "Cannot write $nrF: $!";
-open(PS, "| sort -S 40G -u > '$synF.2col'") or die "Cannot sort to $synF.2col: $!";
-#my $sort_h = start(["sort", "-S", "40G", "-u"],
-#		   "<pipe", \*PS,
-#		   ">", "$synF.2col");
+
+open(PS, "| sort --parallel " . $opt->parallel . " -S 40G -u > '$synF.2col'") or die "Cannot sort to $synF.2col: $!";
 
 my %len_btree;
 unlink($len_btree_file);

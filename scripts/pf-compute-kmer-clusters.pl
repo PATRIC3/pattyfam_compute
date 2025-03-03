@@ -224,7 +224,7 @@ for my $fam (@fams)
     }
     else
     {
-	warn "Empty family $fam\n";
+	# warn "Empty family $fam\n";
     }
 }
 

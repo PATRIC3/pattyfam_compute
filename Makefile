@@ -4,7 +4,7 @@ include $(TOP_DIR)/tools/Makefile.common
 DEPLOY_RUNTIME ?= /kb/runtime
 TARGET ?= /kb/deployment
 
-APP_CXX = propagate_names
+APP_CXX = propagate_names build_signature_kmers nudb_call_kmers
 BIN_CXX = $(addprefix $(BIN_DIR)/,$(APP_CXX))
 DEPLOY_CXX = $(addprefix $(TARGET)/bin,$(APP_CXX))
 
@@ -36,7 +36,7 @@ bin: $(BIN_PERL) $(BIN_SERVICE_PERL) $(BIN_CXX)
 #PROFILE = -pg
 OPT = -O3
 DEBUG = -g
-INC = $(BOOST_INC) $(TBB_FLAGS) $(NUDB_INCLUDE) $(CMPH_INCLUDE) -I../signature_kmers/src
+INC = $(BOOST_INC) $(TBB_FLAGS) $(NUDB_INCLUDE) $(CMPH_INCLUDE) -I../signature_kmers/src -Isrc/NuDB/include
 CXXFLAGS = $(PROFILE) $(DEBUG) $(OPT) $(INC)
 LDFLAGS = -Wl,-rpath,$(BOOST)/lib -Wl,-rpath,$(CMPH)/lib $(PROFILE)
 
@@ -62,6 +62,16 @@ TBB_LIBS = -ltbbmalloc -ltbb
 PROPAGATE_NAMES_OBJS = src/propagate_names.o
 propagate_names: $(PROPAGATE_NAMES_OBJS)
 	$(CXX) $(LDFLAGS) -o $@ $(PROPAGATE_NAMES_OBJS) $(LIBS)
+
+
+BUILD_SIGNATURE_KMERS_OBJS = src/build_signature_nudb.o src/nudb_kmer_db.o src/fasta_parser.o src/fastq_parser.o 
+build_signature_kmers: $(BUILD_SIGNATURE_KMERS_OBJS)
+	$(CXX) $(LDFLAGS) -o $@ $(BUILD_SIGNATURE_KMERS_OBJS) $(LIBS)
+
+
+NUDB_CALL_KMERS_OBJS = src/nudb_call_kmers_generic.o src/nudb_kmer_db.o src/fasta_parser.o src/fastq_parser.o 
+nudb_call_kmers: $(NUDB_CALL_KMERS_OBJS)
+	$(CXX) $(LDFLAGS) -o $@ $(NUDB_CALL_KMERS_OBJS) $(LIBS)
 
 
 deploy: deploy-all

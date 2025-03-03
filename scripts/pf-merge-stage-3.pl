@@ -153,9 +153,8 @@ my %merged;
 
 my %merged_in_fam;
 
-
-
-my $gfam = 'GF00000000';
+my $gfam = '00000000';
+my $prefix = "PGF_";
 for my $mcl (<$merge_dir/mcl/$inflation/*>)
 {
     my $fam = basename($mcl);
@@ -165,7 +164,7 @@ for my $mcl (<$merge_dir/mcl/$inflation/*>)
     # next unless $fam == 2196;
     
     open(F, "<", $mcl) or die "Cannot open $mcl: $!";
-    print STDERR "$mcl $gfam\n";
+    print STDERR "$mcl $prefix$gfam\n";
 
     #
     # Read MCL families and map to the local family identifiers they join.
@@ -236,76 +235,17 @@ for my $mcl (<$merge_dir/mcl/$inflation/*>)
 		for my $pi (@$pl)
 		{
 		    my($peg, $len, $fun, $fam) = @$pi;
-		    print $out_fh join("\t", $gfam, $nf, $ng, $peg, $len, $fun, $fam, $genus, $kgfam), "\n";
+		    print $out_fh join("\t", $prefix . $gfam, $nf, $ng, $peg, $len, $fun, $fam, $genus, $kgfam), "\n";
 		}
 		$merged_in_fam{$lf} = $gfam;
 		$found++;
 	    }
 	    else
 	    {
-		warn "No local fam for $lf ($merged_in_fam{$lf})\n";
+		warn "No local fam for $lf ($prefix$merged_in_fam{$lf})\n";
 	    }
 	}
 	$gfam++ if $found;
-    }
-    next;
-
-    while (<F>)
-    {
-	chomp;
-	my @pegs = split(/\t/);
-	next unless @pegs > 1;
-	my %merge_these;
-	my %gmerge;
-	for my $peg (@pegs)
-	{
-	    my $pi = $peginfo{$peg};
-	    if (!ref($pi))
-	    {
-		warn "No peginfo for $pi\n";
-		next;
-	    }
-	    # print $map_fh "$rep\t$genus\t$fam\t$fun_idx\t$fun\t$gname->{$gid}\n";
-	    my($rep, $genus, $fam, $fidx, $fun) = @$pi;
-	    next unless $genera{$genus};
-	    $gmerge{$genus}++;
-	    $merge_these{$genus, $fam} = 1;
-	}
-	my $n = keys %merge_these;
-	if ($n > 1)
-	{
-	    print STDERR "Merging:\n";
-	    for my $kk (keys %merge_these)
-	    {
-		my($genus, $fam) = split(/$;/, $kk);
-		
-		my $lfams = ref($local_fams{$kk}) ? join(" ", map { $_->[0] } @{$local_fams{$kk}}) : 'NA';
-
-		print STDERR "  $genus\t$fam\t$merged_in_fam{$kk}\t$lfams\n";
-	    }
-	    my $found;
-	    for my $k (keys %merge_these)
-	    {
-		my($genus, $kgfam) = split(/$;/, $k);
-		my $pl = delete $local_fams{$k};
-		my $ng = keys %gmerge;
-		if (ref($pl))
-		{
-		    for my $pi (@$pl)
-		    {
-			my($peg, $len, $fun, $fam) = @$pi;
-			print join("\t", $gfam, $n, $ng, $peg, $len, $fun, $fam, $genus, $kgfam), "\n";
-		    }
-		    $merged_in_fam{$k} = $gfam;
-		    $found++;
-		}
-		else
-		{
-		    warn "No local fam for $k ($merged_in_fam{$k})\n";
-		}
-	    }
-	    $gfam++ if $found;
-	}
     }
 }
 
@@ -317,7 +257,7 @@ for my $lk (sort keys %local_fams)
     for my $pi (@$pl)
     {
 	my($peg, $len, $fun, $fam) = @$pi;
-	print $out_fh join("\t", $gfam, 1, 1, $peg, $len, $fun, $fam, $genus, $kgfam), "\n";
+	print $out_fh join("\t", $prefix . $gfam, 1, 1, $peg, $len, $fun, $fam, $genus, $kgfam), "\n";
     }
     $gfam++;
 }

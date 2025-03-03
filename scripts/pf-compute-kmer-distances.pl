@@ -27,20 +27,16 @@ use Time::HiRes 'gettimeofday';
 use File::Slurp;
 use File::Basename;
 use Getopt::Long::Descriptive;
-use KmerGutsNet;
 use gjoseqlib;
-use IPC::Run 'run';
-use IO::Handle;
 use Data::Dumper;
-use Proc::ParallelLoop;
 use File::Path qw(make_path);
 use File::Slurp;
 use Carp::Always;
-use LPTScheduler;
 
 my($opt, $usage) = describe_options("%c %o kmer-dir seqs-dir calls-file uncalled-ids-file work-dir",
 				    ["parallel=i" => "Parallel threads", { default => 1 }],
 				    ["num-fams|n=i" => "Only process N families (for debugging)"],
+				    ["kmer-stats=s" => "Write kkmer stats here"],
 				    ["truncated-pegs=s" => "File containing possibly truncated pegs"],
 				    ["remove-truncated-threshold=i" =>
 				     "Family size threshold at which truncated (at the end of contigs) features are removed", { default =>  30_000 }],
@@ -124,7 +120,7 @@ if ($opt->truncated_pegs)
 #
 
 $ENV{LANG} = "C";
-open(C, "-|", "sort", "-t", "\t", "-k", 2, $calls_file) or die "Cannot open sort on $calls_file: $!";
+open(C, "-|", "sort", "-t", "\t", "-k", 2, "--parallel", $opt->parallel, $calls_file) or die "Cannot open sort on $calls_file: $!";
 
 my @to_stratify;
 
@@ -379,6 +375,8 @@ while (my ($fam, $count) = each %fam_sequence_count)
 
 my @cmd = ("kmers-matrix-distance-folder",
 	   "-j", $opt->parallel,
+	   "--min-kmers-in-common", 5,
+	   ($opt->kmer_stats ? ("--kmer-stats", $opt->kmer_stats) : ()),
 	   $kmer_dir,
 	   $fasta_dir,
 	   $dist_dir);

@@ -67,8 +67,11 @@ my($opt, $usage) = describe_options("%c %o data-dir",
 				 		{ default => 'genus' }],
 				    ['genus|g=s@', 'Limit to the given genus. May be repeated for multiple genera.'],
 				    ['genus-file|G=s', 'Limit to the genera listed in this file.'],
+				    # ['use-genomes-from=s', 'Use genome lists from this genus.data directory'],
 				    ['genomes=s', 'Limit to the genomes in this file.'],
 				    ['phages!', 'Collect phages', { default => 1 }],
+				    ['max-contamination=f', 'Maxmimum contamination allowed', { default => 1}],
+				    ['min-completeness=f', 'Minimum completeness required', { default => 80}],
 				    ['check-quality!', 'Only use genomes with good quality', { default => 1 }],
 				    ['bad-genome|b=s@', "A bad genome. Don't use it.", { default => ['340189.4'] }],
 				    ["min-cds=i", "Minimum number of CDS features required to build families"],
@@ -214,7 +217,11 @@ sub get_genomes
 	s/\s+$// foreach @x;
 	push(@genus_list, @x);
     }
-    my @genera_query = (fq => "$rank:(" . join(" OR ", map { "\"$_\"" }  @genus_list) . ")" );
+    my @genera_query;
+    if (@genus_list)
+    {
+	@genera_query = (fq => "$rank:(" . join(" OR ", map { "\"$_\"" }  @genus_list) . ")" );
+    }
 
     #
     # Scan the genomes. With the genus data collected above, we can process and classify
@@ -225,19 +232,31 @@ sub get_genomes
     my %all_genomes;
 
     my @query;
+    my @qterms;
     if ($gquery ne '')
     {
-	push(@query, q => "public:* $gquery");
+	push(@qterms, "public:*", $gquery);
     }
     else
     {
-	push(@query, q => "$rank:* public:1");
+	push(@qterms, "$rank:*", "public:1");
     }
     
+    my @reqs = ("checkm_contamination:[0 TO " . $opt->max_contamination . "]",
+		"checkm_completeness:[" . $opt->min_completeness . " TO 100]",
+		"fine_consistency:[85 TO 100]");
+    
+    push(@qterms,
+	 "(reference_genome:* OR (" . join(" AND ", @reqs) . "))");
+
+    push(@query, q => join(" AND ", @qterms));
+
     push(@query,
 	 fl => "$rank,genome_id,genome_name,domain,kingdom,genome_quality,genome_status,genetic_code,taxon_lineage_ids,owner,public,contigs,species,genome_quality_flags,cds,taxon_lineage_names",
 	 @genera_query,
 	 sort => "$rank asc",
+	 fq => "genome_quality:Good",
+	 fq => "genome_status:(Complete OR WGS)",
 	 fq => "superkingdom:(Bacteria OR Archaea)",
 	 fq => "$rank:[* TO *]",
 	 fq => "NOT $rank:null",

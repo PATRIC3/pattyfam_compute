@@ -162,11 +162,16 @@ close(SOURCES) or die "Error closing: $!";
 close(TRUNC) or die "Error closing: $!";
 
 mkdir("$group_dir/nr") or die "cannot mkdir $group_dir/nr: $!";
-my $rc = system("pf-build-nr", "$group_dir/sources", "$group_dir/nr/nr",
+my $rc = system("pf-build-nr",
+		"--parallel", $opt->parallel,
+		"$group_dir/sources", "$group_dir/nr/nr",
 		"$group_dir/nr/peg.synonyms", "$group_dir/nr/nr-len.btree", "$group_dir/nr/figids");
 if ($rc == 0)
 {
-    $rc = system("pf-compute-nr-seqs", "--genome-dir", $opt->genome_dir,  $group_dir);
+    $rc = system("pf-compute-nr-seqs",
+		 "--parallel", $opt->parallel,
+		 "--genome-dir", $opt->genome_dir,
+		 $group_dir);
     if ($rc != 0)
     {
 	warn "pf-compute-nr-seqs $group_dir failed: $rc\n";

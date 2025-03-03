@@ -32,6 +32,8 @@ use Time::HiRes qw(gettimeofday);
 
 my($opt, $usage) = describe_options("%c %o work-file work-index",
 				    ["parallel=i", "Number of threads", { default => 1 }],
+				    ["min-kmers-in-common=i", "Minimum kmers in common required", { default => 5 }],
+				    ["min-protein-len=i", "Minimum protein length to consider", { default => 0 }],
 				    ["log|l=s", "Trace logfile"],
 				    ["help|h", "Show this help message"]);
 
@@ -105,7 +107,8 @@ sub do_work
     my($glob, $item) = @_;
     
     my($fn, $fa_list) = @$item;
-    print "$$ $fn: @$fa_list\n";
+    my $n_fa = @$fa_list;
+    print "$$ $fn: $n_fa files\n";
 
     my $t1 = gettimeofday;
 
@@ -116,50 +119,67 @@ sub do_work
     print $tmp "$_\n" foreach @$fa_list;
     close($tmp);
 
-    my $tmp_dist = File::Temp->new(TEMPLATE => "kmer_dist_${fn}_XXXXXX", TMPDIR => 1);
-    $dist_file = "$tmp_dist";
+    # my $tmp_dist = File::Temp->new(TEMPLATE => "kmer_dist_${fn}_XXXXXX", TMPDIR => 1);
+    # $dist_file = "$tmp_dist";
 
-    my @cmd = ("kmers-matrix-distance-files",
-	       "--n-threads", $opt->parallel,
-	       "--min-kmers-in-common", 5,
-	       "--kmer-stats", "$stat_dir/$fn",
-	       "--input-file-list", "$tmp",
-	       $kmer_dir,
-	       $dist_file,
+    $dist_file = "/dev/fd/1";
+
+    my @dist_cmd = ("kmers-matrix-distance-files",
+		    "--n-threads", $opt->parallel,
+		    "--min-kmers-in-common", $opt->min_kmers_in_common,
+		    "--min-protein-len", $opt->min_protein_len,
+		    "--kmer-stats", "$stat_dir/$fn",
+		    "--input-file-list", "$tmp",
+		    $kmer_dir,
+		    $dist_file,
 	      );
-    print STDERR "Run @cmd\n";
-    my $rc = system(@cmd);
 
-    my $t2 = gettimeofday;
-    my $elap = $t2 - $t1;
-    my $sz = 0;
-    $sz += -s $_ foreach @$fa_list;
-    print join("\t", "ITEM", $fn, $sz, $elap), "\n";
+#    my $mcl_tmp = File::Temp->new(TEMPLATE => "mcl_${fn}_XXXXXX", DIR => "/dev/shm");
+#    close($mcl_tmp);
+    my $ok = IPC::Run::run(\@dist_cmd,
+			   '|',
+			   ["mcl", "-",
+			    "-o", $mcl_file,
+			    "--abc",
+			    "-I", $inflation,
+			    "-te", $opt->parallel],
+			   "2>", "$mcl_file.mcl.out");
+    $ok or die "mcl failed with $?\n";
+    
 
-    if ($rc != 0)
-    {
-	die "Failure $rc running @cmd\n";
-    }
+    # print STDERR "Run @cmd\n";
+    # my $rc = system(@cmd);
 
-    if (-s $dist_file == 0)
-    {
-	open(my $fh, ">", "$mcl_file");
-	close($fh);
-	open(my $fh, ">", "$mcl_file.mcl.out");
-	print $fh "Wrote zero length file due to zero-length input $dist_file\n";
-	close($fh);
-    }
-    else
-    {
-	my $ok = IPC::Run::run(["cut", "-f", "1,2,4", $dist_file],
-			       '|',
-			       ["mcl", "-",
-				"-o", $mcl_file,
-				"--abc",
-				"-I", $inflation,
-				"-te", $opt->parallel], "2>", "$mcl_file.mcl.out");
-	$ok or die "mcl failed with $?\n";
-    }
+    # my $t2 = gettimeofday;
+    # my $elap = $t2 - $t1;
+    # my $sz = 0;
+    # $sz += -s $_ foreach @$fa_list;
+    # print join("\t", "ITEM", $fn, $sz, $elap), "\n";
+
+    # if ($rc != 0)
+    # {
+    # 	die "Failure $rc running @cmd\n";
+    # }
+
+    # if (-s $dist_file == 0)
+    # {
+    # 	open(my $fh, ">", "$mcl_file");
+    # 	close($fh);
+    # 	open(my $fh, ">", "$mcl_file.mcl.out");
+    # 	print $fh "Wrote zero length file due to zero-length input $dist_file\n";
+    # 	close($fh);
+    # }
+    # else
+    # {
+    # 	my $ok = IPC::Run::run(["cut", "-f", "1,2,4", $dist_file],
+    # 			       '|',
+    # 			       ["mcl", "-",
+    # 				"-o", $mcl_file,
+    # 				"--abc",
+    # 				"-I", $inflation,
+    # 				"-te", $opt->parallel], "2>", "$mcl_file.mcl.out");
+    # 	$ok or die "mcl failed with $?\n";
+    # }
 
 }
 

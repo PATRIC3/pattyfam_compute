@@ -26,9 +26,13 @@ use gjoseqlib;
 use Getopt::Long::Descriptive;
 use Data::Dumper;
 use IO::File;
+use Proc::ParallelLoop;
+use POSIX;
+use LPTScheduler;
 
 my($opt, $usage) = describe_options("%c %o genus-data-dir",
 				    ["skip-dna", "Skip computing DNA NR"],
+				    ["parallel|j=i", "Copy files in parallel", { default => 1}],
 				    ["genome-dir=s", "Directory holding PATRIC genome data", { default => "/vol/patric3/downloads/genomes" }],
 				    ["help|h" => "Show this help message."]);
 print($usage->text), exit 1 if $opt->help;
@@ -108,6 +112,7 @@ while (<PEGSYN>)
     }
 }
 close(PEGSYN);
+close(REFS);
 
 my $open_genome;
 my $open_fh;
@@ -169,10 +174,18 @@ closedir(DH);
 
 if (!$opt->skip_dna)
 {
+    my $sched = LPTScheduler->new($opt->parallel);
+    my @all = keys %genomes;
     while (my($genome, $ids) = each %genomes)
     {
 	next if -s "$dna_dir/$genome";
-	
+	$sched->add_work([$genome, $ids], scalar keys %$ids);
+    }
+
+    $sched->run(sub {}, sub {
+	my($glob, $item) = @_;
+	my($genome, $ids) = @$item;
+
 	my $dna1 = $opt->genome_dir . "/$genome/$genome.PATRIC.ffn";
 	
 	my $fh = IO::File->new($dna1, "r");
@@ -201,5 +214,5 @@ if (!$opt->skip_dna)
 	}
 	
 	close(O);
-    }
+    });
 }
