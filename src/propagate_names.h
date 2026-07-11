@@ -20,14 +20,46 @@ typedef tbb::concurrent_unordered_map<std::string, std::vector<std::string>> str
 typedef tbb::concurrent_unordered_map<std::string, std::set<std::string>> string_set_map_t;
 typedef tbb::concurrent_unordered_multimap<std::string, std::string> string_multimap_t;
 
+enum FamilyType
+{
+    FAM_LOCAL,
+    FAM_GLOBAL
+};
+
+
+// A FamilyEntry represents one line from a family file.
+// We create it from a tab-delimited line of text.
+ 
+class FamilyEntry
+{
+public:
+    FamilyEntry(const std::string &line, FamilyType type);
+
+    const std::string &global_fam() const { return cols_[0]; } 
+    unsigned long fams_merged() const { return std::stoul(cols_[1]); };
+    unsigned long genera_merged() const { return std::stoul(cols_[2]); } ;
+    const std::string &fid() const { return cols_[3]; }
+    unsigned long length() const { return std::stoul(cols_[4]); };
+    const std::string &function() const { return cols_[5]; }
+    const std::string &local_fam() const { return cols_[6]; }
+    const std::string &genus() const { return cols_[7]; }
+    const std::string &genus_local_fam() {
+	if (glfam_.empty())
+	{
+	    glfam_ =  genus() + "." + local_fam();
+	}
+	return glfam_;
+    }
+    const std::string &fam() const { return fam_; }
+
+    std::vector<std::string> cols_;
+    std::string glfam_;
+    std::string fam_;
+};
+
 class FamData
 {
 public:
-    enum FamilyType
-    {
-	FAM_LOCAL,
-	FAM_GLOBAL
-    };
 
     FamData(const boost::filesystem::path &fams_file, const boost::filesystem::path &data_dir, const std::string &target_genus,
 	    FamilyType family_type) :
@@ -49,6 +81,7 @@ public:
     }
     
     void read_fams_file();
+    void process_family(const std::vector<FamilyEntry> &fam);
 
     void read_pegsyn_file(boost::filesystem::path &data_file);
     void read_pegsyn();

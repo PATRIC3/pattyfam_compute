@@ -27,7 +27,7 @@ my($opt, $usage) = describe_options("%c %o kmer-dir family-dir output-dir file-b
 print($usage->text), exit 1 if $opt->help;
 die($usage->text) if @ARGV != 4;
 
-my $dbh = DBI->connect("DBI:mysql:database=fig_core_seed;host=arborvitae;mysql_ssl=1",
+my $dbh = DBI->connect("DBI:mysql:database=fig_core_seed;host=chestnut;mysql_ssl=1",
 		       "coreseed", $opt->password);
 
 my $kmer_dir = shift;

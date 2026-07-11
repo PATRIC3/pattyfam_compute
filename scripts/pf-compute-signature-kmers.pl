@@ -201,14 +201,30 @@ for my $org (@orgs)
 	}
 	close(FA);
 	close(NFA);
-		    
+
+	#
+	# We need to read the assigned functions file and create the mapping
+	# from id to function. This is because we can likely have multiple
+	# entries for the same ID as the ID has been given new assignments.
+	# The C++ code currently does not handle that case and as such
+	# may compute some statistics incorrectly.
+	#
+	my %id_func;
 	open(AS, "<", $assign) or die "Cannot open $assign: $!";
 	while (<AS>)
 	{
-	    my($id) = split(/\t/);
-	    print NAS $_ unless $del{$id};
+	    chomp;
+	    my($id, $func) = split(/\t/);
+	    next if $del{$id};
+	    next unless $id =~ /\.peg\./;
+	    $id_func{$id} = $func;
+	    # print NAS $_ unless $del{$id};
 	}
 	close(AS);
+	for my $id (sort keys %id_func)
+	{
+	    print NAS "$id\t$id_func{$id}\n";
+	}
 	close(NAS);
 	    
     }

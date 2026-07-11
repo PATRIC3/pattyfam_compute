@@ -27,6 +27,8 @@ my($opt, $usage) = describe_options("%c %o [log-files] ::: [family-files]",
 print($usage->text), exit 1 if $opt->help;
 die($usage->text) if @ARGV < 3 || !$opt->max_id_file;
 
+$| = 1;
+
 if ($opt->output_directory && ! -d $opt->output_directory)
 {
     die "Output directory " . $opt->output_directory . " does not exist\n";
@@ -143,11 +145,16 @@ sub process_fam_file
 
     open(F, "<", $file) or die "Cannot open $file: $!";
     my $out_fh = \*STDOUT;
+
+    my $out_unmapped;
     if ($out_dir)
     {
 	my $out_file = $out_dir . "/" . basename($file);
+	my $out_unmapped_file = $out_dir . "/unmapped_" . basename($file);
 	$out_fh = IO::Handle->new();
 	open($out_fh, ">", $out_file) or die "Cannot write $out_file: $!";
+
+	open($out_unmapped, ">", $out_unmapped_file) or die "Cannot write $out_unmapped_file: $!";
     }
 
     while (<F>)
@@ -161,7 +168,10 @@ sub process_fam_file
 	# $ngf or die "Cannot map $gf\n";
 	if (!$ngf)
 	{
-	    warn "Cannot map $gf\n";
+	    if ($out_unmapped)
+	    {
+		print $out_unmapped join("\t", $gf, $n, $ng, $peg, $len, $fun, $fam, $genus, $fam), "\n";
+	    }
 	    next;
 	}
 
@@ -176,7 +186,11 @@ sub process_fam_file
 	{
 	    if (exists($next_id->{$genus}))
 	    {
-		die "Cannot map $lf\n";
+		if ($out_unmapped)
+		{
+		    print $out_unmapped join("\t", $gf, $n, $ng, $peg, $len, $fun, $fam, $genus, $fam), "\n";
+		}
+		next;
 	    }
 	    else
 	    {
@@ -187,6 +201,7 @@ sub process_fam_file
 	my($ngenus, $nfam) = $nlf =~ /^(.*?)\.(\d+)$/;
 	print $out_fh join("\t", $ngf, $n, $ng, $peg, $len, $fun, $nfam, $ngenus, $nfam), "\n";
     }
+    close(F);
 
     if ($out_dir)
     {
@@ -200,9 +215,12 @@ sub read_log_file
 
     open(F, "<", $file) or die "Cannot open $file: $!";
 
+    print STDERR "Read $file\n";
     my $find_unmapped;
     while (<F>)
     {
+	my $debug;
+#	my $debug = /PGF_00040283/;
 	chomp;
 	if (/^Unmapped\s+new/)
 	{
@@ -213,6 +231,7 @@ sub read_log_file
 	{
 	    my($new, $old) = ($1, $2);
 
+	    print "new=$new old=$old\n" if $debug;
 	    if ($new eq '')
 	    {
 		warn "$file:$.: new fam is empty\n";
@@ -222,11 +241,13 @@ sub read_log_file
 	    my $genus;
 	    if ($new =~ /^(.*?)\.(\d+)/)
 	    {
+		print "Matched local for $_: '$1' '$2'\n" if $debug;
 		$genus = $1;
 		$map = $lf_id_map;
 	    }
 	    else
 	    {
+		print "Matched global for $_\n" if $debug;
 		$genus = "GLOBAL";
 		$map = $gf_id_map;
 	    }
@@ -247,7 +268,7 @@ sub read_log_file
 	    }
 
 	    defined($map->{$new}) && die "map entry for $new already exists with $old: $_";
-	    # print "MAP '$new' '$old_upd'\t'$_'\n";
+	    print "MAP '$new' '$old_upd'\t'$_'\n" if $debug;
 	    $map->{$new} = $old_upd;
 	}
 	elsif (/^SPLIT\s+O\s+(.*?)\s+=>\s+N\s+(.*)$/)
@@ -316,6 +337,7 @@ sub read_log_file
 	    }
 	}
     }
+    close(F);
 }
 
 

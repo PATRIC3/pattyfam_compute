@@ -16,7 +16,7 @@ use URI::Escape;
 
 my($opt, $usage) = describe_options("%c %o kmer-dir genus-dir merge-dir",
 				    ['html-dir=s', 'If specified, write HTML summaries here'],
-				    ['inflation|I=s', 'Run MCL with this inflation parameter', { default => [2.0]} ],
+				    ['inflation|I=s', 'Run MCL with this inflation parameter', { default => 2.0 } ],
 				    ["parallel|p=i", "Run with this many procs", { default => 1 }],
 				    ["mcl-parallel|P=i", "Run with this many threads for mcl", { default => 1 }],
 				    ["mcl=s", "Use this mcl executable", { default => "mcl" }],

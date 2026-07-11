@@ -160,6 +160,9 @@ void FamData::read_fams_file()
     std::string last_fam;
 
     int line_number = 0;
+
+    std::vector<FamilyEntry> family_entries;
+
     while (std::getline(ifile, line))
     {
 	if (line_number++ % 1000000 == 0)
@@ -181,61 +184,68 @@ void FamData::read_fams_file()
 	// 7	genus
 	// 8	local fam (redundant)
 
-	std::vector<std::string> cols;
-	boost::split(cols, line, boost::is_any_of("\t"));
+	FamilyEntry fament(line, family_type_);
 
-	std::string &peg(cols[3]);
+	const std::string &peg(fament.fid());
 
-	bool debug = cols[0] == "GF00095422";
+	if (fament.fam() != last_fam)
+	{
+	    if (family_entries.size() > 0)
+	    {
+		process_family(family_entries);
+		family_entries.clear();
+	    }
+	    last_fam = fament.fam();
+	}
+	family_entries.emplace_back(fament);
+    }
+    if (family_entries.size() > 0)
+    {
+	process_family(family_entries);
+    }
+}    
 
+void FamData::process_family(const std::vector<FamilyEntry> &family)
+{
+    //
+    // We don't evaluate singleton families.
+    //
+    if (family.size() < 2)
+	return;
+    
+    auto const &first = family[0];
+    
+    fam_to_function_.insert(std::make_pair(first.fam(), first.function()));
+    
+    for (auto ent: family)
+    {
 	/*
 	 * Look up md5 for this member.  We don't process more than
 	 * one entry in a family with the given md5.
 	 */
 	    
-	auto fkiter = fid_to_md5_.find(peg);
+	auto fkiter = fid_to_md5_.find(ent.fid());
 	if (fkiter == fid_to_md5_.end())
 	{
-	    std::cerr << "Could not find md5 for " << peg << std::endl;
+	    std::cerr << "Could not find md5 for " << ent.fid() << std::endl;
 	    continue;
 	}
 	std::string &md5 = fkiter->second;
-	if (debug)
-	    std::cerr << "Key: " << peg << " " << md5 << std::endl;
 
-	std::string &gf(cols[0]);
-	std::string &function(cols[5]);
-	std::string &lnum(cols[6]);
-	std::string &genus(cols[7]);
-
-	std::string fam;
-	if (family_type_ == FAM_GLOBAL)
-	{
-	    fam = gf;
-	}
-	else
-	{
-	    fam = genus + "." + lnum;
-	}
-	if (fam != last_fam)
-	{
-	    fam_to_function_.insert(std::make_pair(fam, function));
-	    last_fam = fam;
-	}
-	auto check = md5_to_fam_.insert(std::make_pair(md5, fam));
+	auto check = md5_to_fam_.insert(std::make_pair(md5, ent.fam()));
 	if (!check.second)
 	{
-	    LOG4CXX_DEBUG(logger, "Peg " << peg << " md5 " << md5 << " in fam " << fam << " already in fam " << check.first->second);
+	    LOG4CXX_DEBUG(logger, "Peg " << ent.fid() << " md5 " << md5 << " in fam " << ent.fam() << " already in fam " << check.first->second);
 	}
 	    
-	md5_to_fam_.insert(std::make_pair(md5, fam));
+	md5_to_fam_.insert(std::make_pair(md5, ent.fam()));
 	//fam_to_md5s_.insert(std::make_pair(fam, md5));
-	fam_to_md5s_[fam].insert(md5);
+	fam_to_md5s_[ent.fam()].insert(md5);
 	    
 //	std::cout << line << "\n";
     }
-    
 }
+
 
 RenumberState::RenumberState(FamData &old_data, FamData &new_data)
     : old_data_(old_data), new_data_(new_data), new_idx_(1)
@@ -413,14 +423,14 @@ void RenumberState::phase_2_body(const std::string &nfam, std::set<std::string> 
     
     if (npegs_that_exist.empty())
     {
-	LOG4CXX_DEBUG(logger, "  all new pegs");
+	LOG4CXX_DEBUG(logger, nfam << "  all new pegs");
 	std::string nm = allocate_new_id();
 	new_fam_name_[nfam] = nm;
 	log_result(nfam + " NOW " + nm + "\n");
     }
     else
     {
-	LOG4CXX_INFO(logger, "starting npegs_that_exist loop " << npegs_that_exist.size());
+	LOG4CXX_INFO(logger, nfam << " starting npegs_that_exist loop " << npegs_that_exist.size());
 
 	for (auto &npeg: npegs_that_exist)
 	{
@@ -440,7 +450,7 @@ void RenumberState::phase_2_body(const std::string &nfam, std::set<std::string> 
 	    auto ofamit = old_data_.md5_to_fam_.find(npeg);
 	    if (ofamit == old_data_.md5_to_fam_.end())
 	    {
-		LOG4CXX_DEBUG(logger, "No mapping for " << npeg << " found in old fams");
+		LOG4CXX_DEBUG(logger, nfam << " No mapping for " << npeg << " found in old fams");
 	    }
 	    else
 	    {
@@ -469,7 +479,7 @@ void RenumberState::phase_2_body(const std::string &nfam, std::set<std::string> 
 		    if (list_iter != old_data_.fam_to_md5s_.end())
 		    {
 			auto &list = list_iter->second;
-			LOG4CXX_INFO(logger, "process list for " << ofam << " " << list.size());
+			LOG4CXX_INFO(logger, nfam << " process list for " << ofam << " " << list.size());
 			for (auto opeg: list)
 			{
 			    if (!new_data_.exists(opeg))
@@ -484,7 +494,7 @@ void RenumberState::phase_2_body(const std::string &nfam, std::set<std::string> 
 		ocount[ofam]++;
 	    }
 	}
-	LOG4CXX_INFO(logger, "found mapped_nfams " << mapped_nfams.size());
+	LOG4CXX_INFO(logger, nfam << " found mapped_nfams " << mapped_nfams.size());
 
 	if (mapped_nfams.size() == 1)
 	{
@@ -497,7 +507,7 @@ void RenumberState::phase_2_body(const std::string &nfam, std::set<std::string> 
 		    rest += " ";
 		}
 		rest += x.first;
-		LOG4CXX_DEBUG(logger, x.first << ": " << x.second << " " << old_data_.fam_to_function_[x.first]);
+		LOG4CXX_DEBUG(logger, nfam << "mapped: " << x.first << ": " << x.second << " " << old_data_.fam_to_function_[x.first]);
 	    }
 	    auto oname = ocount_sorted[0].first;
 	    
@@ -607,6 +617,8 @@ void RenumberState::phase_3()
      * So run sequentially. This phase is typically small anyway.
      */
 
+    // std::cerr << new_data_;
+
     for (auto elt: old_data_.fam_to_md5s_)
     {
 	phase_3_body(elt.first, elt.second);
@@ -624,10 +636,12 @@ void RenumberState::write_unmapped()
      * \t fam \t function
      */
 
+    // std::cerr << "in write unmapped" << new_data_.fam_to_md5s_ << "\n";
     log_result("Unmapped new:\n");
     for (auto ent: new_data_.fam_to_md5s_)
     {
 	const std::string &new_fam = ent.first;
+
 
 	auto fn_iter = new_fam_name_.find(new_fam);
 	if (fn_iter == new_fam_name_.end() || fn_iter->second.empty())
@@ -676,8 +690,11 @@ void RenumberState::start_logger()
 
 void RenumberState::stop_logger()
 {
+    std::cerr << "stop_logger\n";
     result_queue_.push("");
     result_logger_thread_.join();
+    std::cerr << "stop_logger done\n";
+    log_.close();
 }
 
 void RenumberState::log_result(const std::string &res)
@@ -760,11 +777,11 @@ int main(int argc, char* argv[])
     
     tbb::task_scheduler_init sched_init(n_threads);
 
-    FamData::FamilyType ftype;
+    FamilyType ftype;
     if (fam_type == "local")
-	ftype = FamData::FAM_LOCAL;
+	ftype = FAM_LOCAL;
     else if (fam_type == "global")
-	ftype = FamData::FAM_GLOBAL;
+	ftype = FAM_GLOBAL;
     else
     {
 	std::cerr  << "Invalid family type (should be local or global)\n";
@@ -816,4 +833,18 @@ int main(int argc, char* argv[])
     if (log_file != "")
 	renumber.stop_logger();
     _exit(0);
+}
+
+
+FamilyEntry::FamilyEntry(const std::string &line, FamilyType type)
+{
+    boost::split(cols_, line, boost::is_any_of("\t"));
+    if (type == FAM_GLOBAL)
+    {
+	fam_ = global_fam();
+    }
+    else
+    {
+	fam_ = genus_local_fam();
+    }
 }
