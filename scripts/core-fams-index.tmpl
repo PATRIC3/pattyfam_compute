@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+table {
+border-collapse: collapse;
+}
+table, th, td {
+border: 1px solid;
+}
+
+table th {
+font-size: larger;
+padding-top: 0.5em;
+padding-bottom: 0.5em;
+}
+
+table td {
+padding: 3px;
+}
+
+table tr:nth-child(even) {background-color: #f2f2f2;}
+
+</style>
+</head>
+<body>
+
+<h1>Families by number (sorted by size)</h1>
+<table>
+<tr>
+<th>Page</th>
+<th>Starting fam (size)</th>
+<th>Ending fam (size)</th>
+</tr>
+[% FOR page IN pages %]
+<tr>
+<td><a href="[% page.page_file %]">Page [% page.page %]</a></td>
+<td>[% page.first.fam_id %] ([% page.first.fam_size %])</td>
+<td>[% page.last.fam_id %] ([% page.last.fam_size %])</td>
+</tr>
+[% END %]
+</table>
+
+<h1> Families by function</h1>
+<table>
+[% FOR fn IN fam_index.keys.sort %]
+<tr><td>[% fn %]</td>
+<td>
+[% FOR elt IN fam_index.$fn %]
+<a href="[% elt.0 %]#[% elt.1 %]">[% elt.1 %]</a>
+[% END %]
+</td>
+</tr>
+[% END %]
+</body>

@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+table {
+border-collapse: collapse;
+}
+
+table th {
+font-size: larger;
+padding-top: 0.5em;
+padding-bottom: 0.5em;
+}
+
+table td {
+padding: 3px;
+}
+
+table tr:nth-child(even) {background-color: #f2f2f2;}
+
+</style>
+</head>
+<body>
+
+<h1><a href="[% prev_link %]">&larr;</a>  Families page [% page %] of [% num_pages %] <a href="[% next_link %]">&rarr;</a></h1>
+
+<p>
+The numeric values in the family header lines are the mean length of the proteins in the family, and the standard deviation.
+<p>
+The numeric values in the members of the family are the protein length and z-score.
+
+<table border=1>
+[% FOR fam IN fams %]
+<tr>
+<th colspan="2">
+<a href="#[% fam.prev_fam %]">&larr;</a>
+<a name="[% fam.fam_id %]">Family [% fam.fam_id %] cluster [% fam.cluster %] of size [% fam.fam_size %] </a>
+<a href="#[% fam.next_fam %]">&rarr;</a>
+</th>
+<th>[% fam.mean | format('%.1f') %]</th>
+<th>[% fam.dev | format('%.2f')  %]</th>
+<th>
+[% fam.fam_fn %]
+<a target="core_alignment" href="https://bioseed.mcs.anl.gov/~olson/pull-alignment.cgi?tag_[% align_tag %]__genus_[% align_genus %]__fam_id_[% fam.fam_id %]">Alignment</a>
+[% IF fam.compare_regions_reps -%]
+<a target="compare" href="[% fam.compare_regions_reps %]">Reps</a>
+[% END -%]
+[% IF fam.compare_regions_all -%]
+<a target="compare" href="[% fam.compare_regions_all %]">All</a>
+[% END -%]
+[% SET u = uniprot.${fam.fam_fn} %]
+[% IF u %]
+[% FOR elt IN u %]
+<br><a href="https://www.uniprot.org/uniprotkb/[% elt.1 %]/entry" target="uniprot">[% elt.1 %]</a>: [% elt.0 %]
+[% END %]
+[% END %]
+</th>
+</tr>
+[% FOR ent IN fam.members %]
+<tr>
+<td>[% IF ent.is_rep %]<b>[% END %]<a href="[% feature_base_url %][% ent.id %]" target="_blank">[% ent.id %]</a>[% IF ent.is_rep %]</b>[% END %]</td>
+<td>[% ent.genome %]</td>
+<td>[% ent.len %]</td>
+<td>[% ent.zscore %]</td>
+<!--
+<td>[% ent.gene_name %]</td>
+<td>[% ent.alias %]</td>
+-->
+<td>[% ent.core_function %]</td>
+</tr>
+[% END %]
+[% END %]
+</table>
+<h1><a href="[% prev_link %]">&larr;</a>  Families page [% page %] of [% num_pages %] <a href="[% next_link %]">&rarr;</a></h1>
+
+</body>

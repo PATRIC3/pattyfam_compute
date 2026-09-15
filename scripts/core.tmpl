@@ -1,0 +1,22 @@
+<table border=1>
+[% FOR set IN sets %]
+<tr colspan=3>
+<td>
+<b><a href="#[% set.prev_idx %]">&larr;</a>
+<a name="[% set.idx %]" href="[% set.compare_url %]" target="blank">Cluster [% set.idx %] of type [% set.tag %] and size [% set.size %] </a>
+<a href="#[% set.next_idx %]">&rarr;</a>
+</b>
+</td>
+</tr>
+[% FOR ent IN set.entries %]
+<tr>
+<td><a href="https://core.theseed.org/FIG/seedviewer.cgi?page=Annotation&feature=[% ent.id %]" target="blank">[% ent.id %]</a></td>
+<td>[% ent.genome %]</td>
+<td>[% ent.len %]</td>
+<td>[% ent.gene_name %]</td>
+<td>[% ent.alias %]</td>
+<td>[% ent.func %]</td>
+</tr>
+[% END %]
+[% END %]
+</table>
